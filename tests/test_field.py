@@ -73,6 +73,31 @@ def test_binding_identity_and_revoked_radio_credentials(field):
     assert ok(client.get("/api/bootstrap", headers=second))["identity"]["actor"] == person["actor"]
 
 
+def test_suspended_account_is_hidden_from_group_members_and_kept_in_management(field):
+    client, _ = field
+    channel = group(client, "机场演练")
+    active = create_person(client, channel, "现场队员")
+    staff = bind_person(client, active)
+    test_account = create_person(client, channel, "验收账号")
+    actors = {active["actor"], test_account["actor"]}
+    directory_url = EVENT + "/directory"
+    account_url = EVENT + f"/people/{test_account['actor']}/account-status"
+
+    def roster(headers):
+        directory = ok(client.get(directory_url, headers=headers))
+        members = next(c["members"] for c in directory["channels"] if c["id"] == channel)
+        return {person["actor"] for person in members}, directory["people"]
+
+    assert roster(staff)[0] == actors
+    ok(client.post(account_url, headers=DISPATCH, json={"suspended": True}))
+    assert roster(staff)[0] == {active["actor"]}
+    members, people = roster(DISPATCH)
+    assert members == {active["actor"]}
+    assert next(person["login_status"] for person in people if person["actor"] == test_account["actor"]) == "suspended"
+    ok(client.post(account_url, headers=DISPATCH, json={"suspended": False}))
+    assert roster(staff)[0] == actors
+
+
 def test_private_history_and_channel_membership(field):
     client, archive = field
     group_a = group(client, "入口")

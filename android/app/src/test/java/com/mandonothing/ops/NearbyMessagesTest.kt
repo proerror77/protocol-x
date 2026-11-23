@@ -71,9 +71,28 @@ class NearbyMessagesTest {
     }
 
     @Test
-    fun queuedOrdinaryTextCannotUseTheAssistanceOrConfirmationCapacity() {
+    fun channelTextAndPrivateMessagesRequestReadReceipts() {
+        assertTrue(nearbyRequestsReadReceipt("集合点改到三号门", "", hasAudio = false, assistance = false))
+        assertTrue(nearbyRequestsReadReceipt("", "YWJj", hasAudio = false, assistance = false))
+        assertFalse(nearbyRequestsReadReceipt(" ", "", hasAudio = false, assistance = false))
+        assertFalse(nearbyRequestsReadReceipt("语音留言", "", hasAudio = true, assistance = false))
+        assertFalse(nearbyRequestsReadReceipt("求助", "", hasAudio = false, assistance = true))
+    }
+
+    @Test
+    fun textMustBeOnScreenToCountAsRead() {
+        assertFalse(channelTextFullyVisible(0, 50, 300))
+        assertFalse(channelTextFullyVisible(30, 50, 300))
+        assertTrue(channelTextFullyVisible(50, 50, 300))
+        assertFalse(channelTextFullyVisible(250, 500, 300))
+        assertTrue(channelTextFullyVisible(300, 500, 300))
+    }
+
+    @Test
+    fun textRequiringConfirmationStillLeavesRoomForAssistanceAndReceipts() {
         val now = NEARBY_SEND_WINDOW * 5
-        val pending = (1..24).map { row(it, now - it, sender = "my-device") }
+        val pending = (1..24).map { row(it, now - it, sender = "my-device").copy(confirmationRequired = true) }
+        assertTrue(pending.all { !it.priority })
         assertFalse(nearbyCanQueue(pending, "my-device", priority = false, control = false, now = now))
         assertTrue(nearbyCanQueue(pending, "my-device", priority = true, control = false, now = now))
         assertTrue(nearbyCanQueue(pending, "my-device", priority = true, control = true, now = now))
@@ -99,6 +118,11 @@ class NearbyMessagesTest {
         assertFalse(validAcknowledgment(groupMessage, relayReceipt))
         assertTrue(validAcknowledgment(groupMessage, relayReceipt.copy(receiptFor = "",
             confirmationFor = original.id)))
+
+        val delivered = relayReceipt.copy(actor = "recipient")
+        val read = delivered.copy(receiptFor = "", confirmationFor = original.id)
+        assertTrue(collectNearbyReadReceipts(original, listOf(delivered)).isEmpty())
+        assertEquals(listOf(read), collectNearbyReadReceipts(original, listOf(delivered, read, read)))
     }
 
     @Test

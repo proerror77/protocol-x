@@ -102,7 +102,7 @@ internal data class NearbyMessage(
 ) {
     val isControl get() = confirmationFor.isNotEmpty() || receiptFor.isNotEmpty()
     val isPrivate get() = sealedPayload.isNotEmpty()
-    val priority get() = isControl || assistance || confirmationRequired
+    val priority get() = isControl || assistance
     private val extended get() = isControl || isPrivate || confirmationRequired || recipient.isNotEmpty()
     val delivery get() = nearbyDelivery(received, attemptedVia, expired)
 
@@ -247,6 +247,9 @@ internal fun nearbyCanQueue(entries: List<NearbyMessage>, sender: String, priori
     } < limit
 }
 
+internal fun nearbyRequestsReadReceipt(text: String, sealedPayload: String, hasAudio: Boolean, assistance: Boolean) =
+    !assistance && !hasAudio && (text.isNotBlank() || sealedPayload.isNotEmpty())
+
 internal class NearbyMessages(context: Context, config: NearbyConfig, private val identity: NearbyIdentity) {
     @Volatile private var credential = config
     val voiceEnabled get() = credential.voiceEnabled
@@ -277,11 +280,11 @@ internal class NearbyMessages(context: Context, config: NearbyConfig, private va
     fun isPrivateAddressedToMe(message: NearbyMessage): Boolean = message.isPrivate && message.recipient == actor
 
     @Synchronized fun send(text: String, audio: ByteArray? = null, assistance: Boolean = false,
-                           id: String = UUID.randomUUID().toString(), confirmationRequired: Boolean = false,
-                           recipient: String = "", sealedPayload: String = "", confirmationFor: String = "",
-                           receiptFor: String = ""): String {
+                           id: String = UUID.randomUUID().toString(),
+                           recipient: String = "", sealedPayload: String = ""): String {
+        val confirmationRequired = nearbyRequestsReadReceipt(text, sealedPayload, audio != null, assistance)
         return enqueue(text, audio, assistance, id, confirmationRequired, recipient, sealedPayload,
-            confirmationFor, receiptFor, null)
+            "", "", null)
     }
 
     private fun enqueue(text: String, audio: ByteArray?, assistance: Boolean, id: String,
@@ -309,30 +312,29 @@ internal class NearbyMessages(context: Context, config: NearbyConfig, private va
         return id
     }
 
-    @Synchronized fun confirm(id: String): Boolean = acknowledge(id, human = true)
+    @Synchronized fun markRead(id: String): Boolean = acknowledge(id, readReceipt = true)
 
-    @Synchronized fun acknowledgePrivate(id: String): Boolean = acknowledge(id, human = false)
+    @Synchronized fun acknowledgePrivate(id: String): Boolean = acknowledge(id, readReceipt = false)
 
-    private fun acknowledge(id: String, human: Boolean): Boolean {
+    private fun acknowledge(id: String, readReceipt: Boolean): Boolean {
         val now = System.currentTimeMillis()
         val target = journal.active(now).firstOrNull { it.id == id } ?: return false
         if (actor.isEmpty() || target.sender == sender || target.actor == actor || target.actor.isBlank() ||
-            (human && !target.confirmationRequired) ||
-            (!human && !isPrivateAddressedToMe(target)) ||
+            (readReceipt && !target.confirmationRequired) ||
+            (!readReceipt && !isPrivateAddressedToMe(target)) ||
             (target.isPrivate && !isPrivateAddressedToMe(target))) return false
-        val kind = if (human) "confirm" else "receipt"
+        val kind = if (readReceipt) "confirm" else "receipt"
         val key = UUID.nameUUIDFromBytes("protocol-x-nearby-$kind|${group.serviceName}|$id|$actor".toByteArray()).toString()
         return runCatching {
             enqueue("", null, false, key, false, target.actor, "",
-                if (human) id else "", if (human) "" else id,
-                if (!human && target.directlyReceived) target.deliveredVia else null)
+                if (readReceipt) id else "", if (readReceipt) "" else id,
+                if (!readReceipt && target.directlyReceived) target.deliveredVia else null)
         }.isSuccess
     }
 
-    @Synchronized fun confirmations(id: String): List<NearbyMessage> {
+    @Synchronized fun readReceipts(id: String): List<NearbyMessage> {
         val target = journal.entries.firstOrNull { it.id == id && it.confirmationRequired } ?: return emptyList()
-        return journal.entries.filter { it.confirmationFor == id && validAcknowledgment(target, it) }
-            .distinctBy { it.actor }
+        return collectNearbyReadReceipts(target, journal.entries)
     }
 
     @Synchronized fun syncAssistance(id: String) {
@@ -510,6 +512,9 @@ internal fun validAcknowledgment(message: NearbyMessage, proof: NearbyMessage): 
     return (message.isPrivate && proof.receiptFor == message.id) ||
         (message.confirmationRequired && proof.confirmationFor == message.id)
 }
+
+internal fun collectNearbyReadReceipts(message: NearbyMessage, entries: List<NearbyMessage>): List<NearbyMessage> =
+    entries.filter { it.confirmationFor == message.id && validAcknowledgment(message, it) }.distinctBy { it.actor }
 
 private fun keyFingerprint(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
     .digest(bytes).take(16).joinToString("") { "%02x".format(it) }
