@@ -116,6 +116,7 @@ internal class NearbyLiveVoice(
     private var closed = false
     private var pumping = false
     private var outstandingNotes = 0
+    @Volatile var receiveMuted = false
 
     private var speaker: AudioTrack? = null
     private var playingBurst: String? = null
@@ -271,7 +272,9 @@ internal class NearbyLiveVoice(
             if (closed || current != null) null else remote.playout(now)
         }
         try {
-            if (offer == null) {
+            if (receiveMuted) {
+                releaseSpeaker()
+            } else if (offer == null) {
                 if (transmitting || now >= speakerDrainsAt) releaseSpeaker()
             } else {
                 if (playingBurst != offer.burst) {

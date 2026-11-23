@@ -145,7 +145,27 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
         readImage(eventPath(eventId, "arrival-plans/${segment(planId)}/players/${segment(playerId)}/photo"),
             setOf("image/jpeg", "image/png"))
 
-    suspend fun arrivalNotices(after: Long) = request("/api/arrival-flight-notices?after=$after")
+    suspend fun streamArrivalNotices(after: Long, onNotice: (JSONObject) -> Unit) = withContext(Dispatchers.IO) {
+        val http = connection("/api/arrival-flight-notices/stream?after=$after", 15_000).apply {
+            readTimeout = 40_000
+            useCaches = false
+            setRequestProperty("Accept", "text/event-stream")
+        }
+        try {
+            val status = http.responseCode
+            if (status != 200) throw OpsException(status, "航班通知通道不可用")
+            require(http.contentType?.substringBefore(';') == "text/event-stream")
+            http.inputStream.bufferedReader(Charsets.UTF_8).use { input ->
+                while (true) {
+                    ensureActive()
+                    val line = input.readLine() ?: break
+                    if (line.startsWith("data: ")) onNotice(JSONObject(line.substring(6)))
+                }
+            }
+        } finally {
+            http.disconnect()
+        }
+    }
 
     private suspend fun readImage(path: String, formats: Set<String>): ByteArray = withContext(Dispatchers.IO) {
         val http = connection(path, 12_000).apply { useCaches = false }

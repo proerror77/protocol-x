@@ -49,6 +49,9 @@ internal class VoiceChannel(
     private val onState: (VoiceState, String) -> Unit,
 ) {
     private val audioPreferences = context.getSharedPreferences("voice_audio", Context.MODE_PRIVATE)
+    private val muteKey = "mute-receive:" + (target?.id ?: eventId)
+    var receiveMuted = audioPreferences.getBoolean(muteKey, false)
+        private set
     private val audioHandler = AudioSwitchHandler(context.applicationContext).apply {
         registerAudioDeviceChangeListener { devices, selected ->
             scope.launch {
@@ -84,7 +87,9 @@ internal class VoiceChannel(
     }
 
     private fun beginRemote(track: Track?, sid: String, name: String?) {
-        if (track !is RemoteAudioTrack || sid in incomingPcm) return
+        if (track !is RemoteAudioTrack) return
+        track.setVolume(if (receiveMuted) 0.0 else 1.0)
+        if (sid in incomingPcm) return
         val pcm = TrackPcm(track, name?.takeIf(String::isNotBlank) ?: "频道成员")
         if (runCatching { track.addSink(pcm.sink) }.isSuccess) incomingPcm[sid] = pcm
     }
@@ -315,6 +320,17 @@ internal class VoiceChannel(
     fun audioOutputs() = audioHandler.availableAudioDevices.toList()
 
     fun currentOutput() = audioHandler.selectedAudioDevice
+
+    fun setReceiveMuted(muted: Boolean) {
+        receiveMuted = muted
+        audioPreferences.edit().putBoolean(muteKey, muted).apply()
+        val volume = if (muted) 0.0 else 1.0
+        room.remoteParticipants.values.forEach { participant ->
+            participant.trackPublications.values.forEach { publication ->
+                (publication.track as? RemoteAudioTrack)?.setVolume(volume)
+            }
+        }
+    }
 
     fun selectOutput(device: AudioDevice) {
         if (!closed && device in audioHandler.availableAudioDevices) {

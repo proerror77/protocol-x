@@ -1,4 +1,5 @@
 """Player reception plans, role-scoped handoffs and airport-derived readiness."""
+import asyncio
 import base64
 import binascii
 import json
@@ -6,8 +7,10 @@ import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Annotated, Literal
 
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import AwareDatetime, Field, StringConstraints, UUID4, model_validator
+from starlette.concurrency import run_in_threadpool
 
 from .bindings import event_and_definition, project_task, ref_of, resolve, task_rows
 from .flights import AIRPORT_TZ, HKG_EVENTS
@@ -18,6 +21,7 @@ from .store import dump
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 Actor = Annotated[str, StringConstraints(pattern=r"^(demo-staff|person-[a-f0-9]{32})$")]
 FLIGHT_NOTICE_LABELS = {"delay": "航班延误", "landed": "航班已落地", "at_gate": "飞机已到达机位"}
+ARRIVAL_NOTICE_SCOPE = "arrival-flight-notices"
 HISTORY = {
     "plan_created": "安排接待", "plan_updated": "更新接待安排", "photo_updated": "更新球员照片",
     "hotel_confirmed": "确认酒店预订", "hotel_pending": "酒店改为待确认",
@@ -172,6 +176,21 @@ class ArrivalDesk:
                 CREATE INDEX IF NOT EXISTS arrival_flight_notices_recorded
                     ON arrival_flight_notices(recorded_at);
             """)
+            if conn.postgres:
+                conn.execute("""
+                    CREATE OR REPLACE FUNCTION ops_signal_arrival_notice() RETURNS trigger
+                    LANGUAGE plpgsql AS $$
+                    BEGIN
+                        PERFORM pg_notify('ops_channel_changed', 'arrival-flight-notices');
+                        RETURN NEW;
+                    END
+                    $$
+                """)
+                conn.execute("DROP TRIGGER IF EXISTS ops_arrival_notice ON arrival_flight_notices")
+                conn.execute("""
+                    CREATE TRIGGER ops_arrival_notice AFTER INSERT ON arrival_flight_notices
+                    FOR EACH ROW EXECUTE FUNCTION ops_signal_arrival_notice()
+                """)
 
     def record_observation(self, conn, link, previous, observation):
         task_id = json.loads(link["task_ref"])["id"]
@@ -507,6 +526,44 @@ def register_arrival_desk(app, identity, desk):
                        user=Depends(identity)):
         response.headers["Cache-Control"] = "private, no-store"
         return desk.notices(user, after)
+
+    @app.get("/api/arrival-flight-notices/stream")
+    async def flight_notice_stream(request: Request,
+                                   after: int = Query(default=0, ge=0, le=9223372036854775807),
+                                   user=Depends(identity)):
+        if not desk.field.enabled or "device" not in user or user["role"] != "staff":
+            raise HTTPException(403, "请先绑定个人现场账号")
+        wakeups = app.state.channel_wakeups
+        header = request.headers.get("Authorization")
+
+        async def events():
+            cursor = after
+            with wakeups.watch(ARRIVAL_NOTICE_SCOPE) as wake:
+                while not await request.is_disconnected():
+                    wake.clear()
+                    try:
+                        active = await run_in_threadpool(desk.field.authenticate, header)
+                        if active is None or active["actor"] != user["actor"] or active["role"] != "staff":
+                            return
+                        batch = await run_in_threadpool(desk.notices, active, cursor)
+                    except HTTPException as error:
+                        if error.status_code in (401, 403):
+                            return
+                        raise
+                    for item in batch["items"]:
+                        cursor = item["seq"]
+                        yield f"id: {cursor}\ndata: {dump(item)}\n\n"
+                    if batch["has_more"]:
+                        continue
+                    try:
+                        await asyncio.wait_for(wake.wait(), 20 if wakeups.paths else 2)
+                    except TimeoutError:
+                        yield ": heartbeat\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream", headers={
+            "Cache-Control": "private, no-store, no-transform",
+            "X-Accel-Buffering": "no",
+        })
 
     @app.put(prefix)
     def save(event_id: str, plan_id: UUID4, body: PlanInput, user=Depends(identity)):

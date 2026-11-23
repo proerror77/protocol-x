@@ -71,6 +71,9 @@ import kotlin.math.max
 class MainActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val nearbyPanel by lazy { NearbyPanel(this, scope) }
+    private val appUpdates by lazy { AppUpdates(this) }
+    private var channelReceiveMuted = false
+    private var flightNoticeObserver: Job? = null
     private val unreadChannelText = mutableMapOf<String, View>()
     private val pendingReadReceipts = mutableSetOf<String>()
     private var channelReadCheckScheduled = false
@@ -144,13 +147,13 @@ class MainActivity : Activity() {
     private var lastIncomingId: String? = null
     private var placingCall = false
     private lateinit var channelMeta: Button
+    private lateinit var channelMute: Button
     private lateinit var memberChannelTitle: TextView
     private lateinit var memberRows: LinearLayout
     private lateinit var memberSearch: EditText
     private var memberListKey = ""
     private lateinit var channelConnection: TextView
     private lateinit var channelState: TextView
-    private lateinit var channelSpeaker: TextView
     private lateinit var conversation: LinearLayout
     private lateinit var radioHeader: LinearLayout
     private var dispatchInstructions = emptyList<JSONObject>()
@@ -466,6 +469,12 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         visible = true
+        flightNoticeObserver = scope.launch {
+            ArrivalWatchService.events.collect { (origin, event) ->
+                if (visible && event == eventId && origin == client?.origin) refresh(automatic = true)
+            }
+        }
+        enableArrivalWatch()
         NearbyService.uiActive = true
         nearbyPanel.resume()
         nearbyObserver = scope.launch {
@@ -512,6 +521,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         visible = false
+        flightNoticeObserver?.cancel()
         scheduleVisibleChannelReads()
         NearbyService.uiActive = false
         nearbyPanel.pause()
@@ -911,6 +921,7 @@ class MainActivity : Activity() {
         getPreferences(MODE_PRIVATE).edit().putString("server", connected.origin)
             .putString("callsign", callsign).apply()
         showWorkspace()
+        enableArrivalWatch()
     }
 
     private fun showWorkspace(previousEvent: String? = null) {
@@ -1070,12 +1081,9 @@ class MainActivity : Activity() {
         val output = voiceService?.state?.value?.takeIf { it.workspace?.eventId == eventId && eventId != null }
             ?.let { "音频输出 · " + it.output }
         val manage = if (role == "dispatcher" && client?.fieldEnabled == true) "人员与频道" else null
-        val arrivalWatch = if (client?.bound == true && role == "staff") {
-            if (ArrivalWatchService.running) "结束航班值班提醒" else "开启后台航班提醒"
-        } else null
         val exitRadio = if (voiceState != VoiceState.OFFLINE) "离开语音" else null
         val retrySync = if (workspaceOnline) null else "重试同步"
-        val choices = listOfNotNull("切换活动", manage, output, exitRadio, arrivalWatch, retrySync, "退出登录").toTypedArray()
+        val choices = listOfNotNull("切换活动", manage, output, exitRadio, retrySync, "关于 Protocol X", "退出登录").toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.app_name))
             .setItems(choices) { _, index ->
@@ -1083,11 +1091,7 @@ class MainActivity : Activity() {
                     "切换活动" -> showActivityPicker()
                     "人员与频道" -> showFieldManagement()
                     "离开语音" -> disconnectVoice("可随时接入语音")
-                    "开启后台航班提醒" -> enableArrivalWatch()
-                    "结束航班值班提醒" -> {
-                        ArrivalWatchService.end(this)
-                        showConnectionStatus("航班值班提醒已结束")
-                    }
+                    "关于 Protocol X" -> showAbout()
                     "重试同步" -> refresh()
                     "退出登录" -> logout()
                     else -> chooseOutput()
@@ -1097,28 +1101,79 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun showAbout() {
+        val panel = column().apply { setPadding(dp(22), dp(8), dp(22), dp(10)) }
+        put(panel, text("版本 ${BuildConfig.VERSION_NAME} · 构建 ${BuildConfig.VERSION_CODE}", 16, INK, true), 2)
+        val status = liveText()
+        put(panel, status, 8)
+        var pendingRelease: AppRelease? = null
+        var downloaded: File? = null
+        var operation: Job? = null
+        val dialog = AlertDialog.Builder(this).setTitle("关于 Protocol X").setView(panel)
+            .setNegativeButton("关闭", null).setPositiveButton("检查更新", null).create()
+        dialog.setOnDismissListener { operation?.cancel() }
+        dialog.show()
+        val action = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+        action.setOnClickListener {
+            val local = downloaded
+            if (local != null) {
+                runCatching {
+                    if (appUpdates.canInstall()) startActivity(appUpdates.installIntent(local))
+                    else {
+                        status.text = "在系统设置允许 Protocol X 安装应用，返回后点安装更新。"
+                        startActivity(appUpdates.permissionIntent())
+                    }
+                }.onFailure { status.text = "系统安装页无法打开" }
+                return@setOnClickListener
+            }
+            val release = pendingRelease
+            action.isEnabled = false
+            status.text = if (release == null) "正在检查 GitHub Releases…" else "正在下载 0%"
+            operation = scope.launch {
+                try {
+                    if (release == null) {
+                        pendingRelease = appUpdates.latest()?.takeIf { it.isNewerThan(BuildConfig.VERSION_CODE.toLong()) }
+                        val available = pendingRelease
+                        if (available == null) status.text = "当前版本已是最新"
+                        else {
+                            val size = (available.bytes + 1_048_575) / 1_048_576
+                            status.text = "发现 ${available.version} · 约 ${size} MB"
+                            action.text = "下载更新"
+                        }
+                    } else {
+                        downloaded = appUpdates.download(release) { percent ->
+                            withContext(Dispatchers.Main) { status.text = "正在下载 $percent%" }
+                        }
+                        status.text = "下载完成，已验证应用签名。"
+                        action.text = "安装更新"
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    status.text = if (release == null) "暂时无法检查更新，请重试" else "下载或校验失败，请重试"
+                } finally {
+                    if (dialog.isShowing) action.isEnabled = true
+                }
+            }
+        }
+    }
+
     private fun enableArrivalWatch() {
+        if (!visible || client?.bound != true || role != "staff" || ArrivalWatchService.running) return
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) {
+            val settings = getPreferences(MODE_PRIVATE)
+            if (settings.getBoolean("asked_flight_notifications", false)) return
+            settings.edit().putBoolean("asked_flight_notifications", true).apply()
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), ARRIVAL_NOTIFICATION_PERMISSION)
         } else startArrivalWatch()
     }
 
     private fun startArrivalWatch() {
-        if (!visible || client?.bound != true || role != "staff") return
+        if (!visible || client?.bound != true || role != "staff" || ArrivalWatchService.running) return
         ArrivalWatchService.createChannels(getSystemService(android.app.NotificationManager::class.java))
-        if (!ArrivalWatchService.canNotify(this)) {
-            showConnectionStatus("请在系统设置允许接机航班通知后开启")
-            return
-        }
-        try {
-            startForegroundService(Intent(this, ArrivalWatchService::class.java))
-            showConnectionStatus("正在开启航班值班提醒")
-        } catch (_: IllegalStateException) {
-            showConnectionStatus("暂时无法开启，请稍后在前台重试")
-        } catch (_: SecurityException) {
-            showConnectionStatus("系统未允许航班值班")
-        }
+        if (!ArrivalWatchService.canNotify(this)) return
+        runCatching { startForegroundService(Intent(this, ArrivalWatchService::class.java)) }
     }
 
     private fun showActivityPicker() {
@@ -1136,52 +1191,57 @@ class MainActivity : Activity() {
 
     private fun buildVoicePage(container: LinearLayout) {
         radioHeader.removeAllViews()
-        val channel = card(radioHeader, CHANNEL)
+        val channel = column().apply {
+            background = panelColor(CHANNEL, 12, CARD_BORDER)
+            setPadding(dp(10), dp(2), dp(10), dp(3))
+            put(radioHeader, this, 4)
+        }
         val header = row(channel)
-        val identity = column()
-        channelName = text("", 24, INK, true).apply {
-            maxLines = 2
+        channelName = linkButton("").apply {
+            setTextSize(20f)
+            setTextColor(INK)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             letterSpacing = -0.02f
-        }
-        identity.addView(channelName)
-        channelMeta = linkButton("").apply {
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setTextSize(13f)
-            setOnClickListener { showMembers() }
-        }
-        put(identity, channelMeta, 0)
-        addWeighted(header, identity)
-        val channelPicker = linkButton(if (client?.bound == true) "频道列表 ›" else "切换活动 ›").apply {
-            setTextSize(14f)
             setOnClickListener {
                 if (!mutationPending) {
                     if (client?.bound == true) showChannelPicker() else showActivityPicker()
                 }
             }
         }
-        header.addView(channelPicker, LinearLayout.LayoutParams(WRAP, WRAP))
+        addWeighted(header, channelName)
+        channelMeta = linkButton("").apply {
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setTextSize(13f)
+            setOnClickListener { showMembers() }
+        }
+        header.addView(channelMeta, LinearLayout.LayoutParams(WRAP, WRAP))
         val statusRow = row(channel)
         channelConnection = text("", 12, ACCENT, true).apply {
             setPadding(dp(8), dp(5), dp(8), dp(5))
             background = panelColor(DOCK, 8, CARD_BORDER)
         }
         statusRow.addView(channelConnection, LinearLayout.LayoutParams(WRAP, WRAP))
-        channelState = text("", 13, MUTED)
+        channelState = text("", 13, MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
         addWeighted(statusRow, channelState, 8)
-        channelSpeaker = text("", 13, MUTED)
-        put(channel, channelSpeaker, 3)
-        val controls = row(channel)
-        joinButton = button("接入语音", primary = true).apply {
+        joinButton = linkButton("接入语音").apply {
+            setTextSize(13f)
             setOnClickListener { connectVoice() }
         }
-        addWeighted(controls, joinButton)
-        leaveButton = button("离开语音").apply {
+        statusRow.addView(joinButton)
+        channelMute = linkButton("静音").apply {
+            setTextSize(13f)
+            setOnClickListener { voiceService?.toggleReceiveMute(voiceOwner) }
+        }
+        statusRow.addView(channelMute)
+        leaveButton = linkButton("离开语音").apply {
+            setTextSize(13f)
             setOnClickListener { disconnectVoice("可随时接入语音") }
         }
-        addWeighted(controls, leaveButton)
+        statusRow.addView(leaveButton)
         val tools = row(radioHeader)
-        addWeighted(tools, text("频道动态", 16, INK, true))
+        addWeighted(tools, text("频道动态", 19, INK, true))
         val channelTools = linkButton("频道工具 ›").apply { setOnClickListener { showRadioTools() } }
         tools.addView(channelTools, LinearLayout.LayoutParams(WRAP, WRAP))
         conversation = column()
@@ -1292,8 +1352,9 @@ class MainActivity : Activity() {
     }
 
     private fun createPushToTalkButton() = button("按住说话 · PTT", primary = true).apply {
-        minimumHeight = dp(76)
-        minHeight = dp(76)
+        minimumHeight = dp(92)
+        minHeight = dp(92)
+        background = RippleDrawable(ColorStateList.valueOf(0x32FFFFFF), panelColor(ACTIVE, 46, ACTIVE), null)
         setTypeface(typeface, Typeface.BOLD)
         setTextSize(22f)
         contentDescription = "按住说话，松开结束"
@@ -3070,7 +3131,7 @@ class MainActivity : Activity() {
         val fieldUser = client?.bound == true
         val title = current?.name ?: if (fieldUser) "工作频道" else currentEventTitle()
         val roster = currentChannel()
-        channelName.text = title
+        channelName.text = "$title  ▾"
         channelMeta.text = if (fieldUser && current != null) {
             val count = roster?.optJSONArray("members")?.length()
             if (count != null) "成员  $count  ›" else "成员  ›"
@@ -4569,6 +4630,7 @@ class MainActivity : Activity() {
         val previousHeard = lastHeard
         val previousClips = localVoiceClips
         val joinedHere = snapshot.workspace?.let { it.eventId == eventId && it.client === client && it.target == radio } == true
+        channelReceiveMuted = joinedHere && snapshot.receiveMuted
         remoteSpeaker = if (joinedHere) snapshot.speaker else null
         if (joinedHere && snapshot.localClips.isNotEmpty())
             localVoiceClips = (snapshot.localClips + localVoiceClips).distinctBy { it.trackSid }.take(16)
@@ -4611,6 +4673,8 @@ class MainActivity : Activity() {
         joinButton.isEnabled = voiceService != null && available && state == VoiceState.OFFLINE
         leaveButton.visibility = if (state == VoiceState.OFFLINE) View.GONE else View.VISIBLE
         leaveButton.text = if (state == VoiceState.CONNECTING) "取消连接" else "离开语音"
+        channelMute.visibility = if (joined) View.VISIBLE else View.GONE
+        channelMute.text = if (channelReceiveMuted) "取消静音" else "静音"
         val fallback = nearbyVoiceFallback()
         pttButton.isEnabled = fallback || available && voiceService != null && joined && !sendingTail
         pttButton.text = when (state) {
@@ -4654,7 +4718,7 @@ class MainActivity : Activity() {
         } else when (voiceState) {
             VoiceState.OFFLINE -> "语音就绪"
             VoiceState.CONNECTING -> "连接中"
-            VoiceState.LISTENING -> "收听中"
+            VoiceState.LISTENING -> if (channelReceiveMuted) "已静音" else "收听中"
             VoiceState.REQUESTING -> "申请话权"
             VoiceState.SPEAKING -> "发言中"
         }
@@ -4668,22 +4732,18 @@ class MainActivity : Activity() {
             radio?.kind == "direct" -> "从私呼联系人发起通话"
             !voiceConfigured() -> "服务器未启用实时对讲"
             !available -> "行动语音尚未开启"
-            voiceState == VoiceState.OFFLINE && voiceLabel.text.toString() in setOf("", "未加入频道", "已退出频道") ->
-                "接入后可收听和发言"
+            voiceState == VoiceState.OFFLINE && voiceLabel.text.toString() in setOf("", "未加入频道", "已退出频道") -> ""
             speaker != null -> "${speaker.name} 正在发言"
-            voiceState == VoiceState.LISTENING -> "频道空闲"
+            voiceState == VoiceState.LISTENING -> ""
             voiceState == VoiceState.SPEAKING -> "$callsign 正在发言"
             else -> voiceLabel.text
         }
-        channelSpeaker.text = if (voiceState == VoiceState.LISTENING && speaker == null)
-            lastHeard?.let { "上一位 · ${it.name}" }.orEmpty() else ""
-        channelSpeaker.visibility = if (channelSpeaker.text.isEmpty()) View.GONE else View.VISIBLE
         pttHint.text = when {
             nearbyVoiceFallback() -> "附近离线 · 松开发送语音留言"
             voiceState == VoiceState.SPEAKING -> voiceLabel.text
             voiceState == VoiceState.REQUESTING -> voiceLabel.text
             voiceState == VoiceState.CONNECTING -> "正在加入频道"
-            pttButton.isEnabled -> if (archiveEnabled) "按住发言 · 语音留档" else "按住发言，松开回到收听"
+            pttButton.isEnabled -> ""
             available -> "加入频道后可发言"
             else -> "频道就绪后可发言"
         }
@@ -4697,7 +4757,7 @@ class MainActivity : Activity() {
             View.VISIBLE else View.GONE
         if (::dockSummary.isInitialized) {
             dockSummary.visibility = if (radioPage) View.GONE else View.VISIBLE
-            pttHint.visibility = if (radioPage) View.VISIBLE else View.GONE
+            pttHint.visibility = if (radioPage && pttHint.text.isNotEmpty()) View.VISIBLE else View.GONE
         }
         replayBar.visibility = if (workspaceVisible && ::replayFeedback.isInitialized && replayFeedback.text.isNotBlank())
             View.VISIBLE else View.GONE

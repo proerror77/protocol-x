@@ -83,7 +83,10 @@ internal class NearbyService : Service() {
                 scope.value = requested.scope
                 current.value = messages
                 val auth = NearbyVoiceAuthentication(messages.group.serviceName, deviceIdentity) { config }
-                val controller = NearbyLiveVoice(messages.sender, cacheDir, protect = auth::protect)
+                val controller = NearbyLiveVoice(messages.sender, cacheDir, protect = auth::protect).apply {
+                    receiveMuted = getSharedPreferences("voice_audio", MODE_PRIVATE)
+                        .getBoolean("mute-receive:" + requested.channel, false)
+                }
                 voice.value = controller
                 radios = NearbyRadios(this, messages, ::incoming, liveVoice = controller, voiceAuth = auth,
                     onDiagnostics = { metrics.value = it }) { radio, available, linked ->
@@ -200,6 +203,9 @@ internal class NearbyService : Service() {
         val diagnostics = metrics.asStateFlow()
         val channelCredential = activeCredential.asStateFlow()
         val liveVoice: NearbyLiveVoice? get() = voice.value
+        fun setReceiveMuted(channel: String, muted: Boolean) {
+            if (activeCredential.value?.channel == channel) voice.value?.receiveMuted = muted
+        }
         val session = current.asStateFlow()
         val radios = status.asStateFlow()
         val error = failure.asStateFlow()

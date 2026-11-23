@@ -97,6 +97,8 @@ def test_personal_reception_from_hkia_to_check_in(tmp_path, monkeypatch):
     assert ok(client.get(inbox, headers=unassigned))["items"] == []
     assert client.get(inbox, headers=DISPATCH).status_code == 403
     assert client.get(inbox, headers=DEMO_STAFF).status_code == 403
+    assert client.get(inbox + "/stream", headers=DISPATCH).status_code == 403
+    assert client.get(inbox + "/stream", headers=DEMO_STAFF).status_code == 403
     reviewed = {"task": {"ontology_id": "golf.v1", "object_type": "TransferLeg", "id": task_id},
                 "request_id": str(uuid4()), "text": "会合点入口关闭，演练回报"}
     report_url = ROOT + "/qrf/reports"
