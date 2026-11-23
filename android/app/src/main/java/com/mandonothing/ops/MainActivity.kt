@@ -72,6 +72,10 @@ class MainActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val nearbyPanel by lazy { NearbyPanel(this, scope) }
     private lateinit var channelComposer: LinearLayout
+    private lateinit var channelWrite: Button
+    private lateinit var channelEditor: LinearLayout
+    private lateinit var channelOptions: LinearLayout
+    private lateinit var channelOptionsButton: Button
     private lateinit var channelText: EditText
     private lateinit var channelSend: Button
     private lateinit var channelSendStatus: TextView
@@ -79,6 +83,8 @@ class MainActivity : Activity() {
     private lateinit var channelRecipientPicker: Button
     private lateinit var channelAttach: Button
     private lateinit var channelWantReceipt: CheckBox
+    private var channelEditorOpen = false
+    private var channelOptionsOpen = false
     private var channelComposerScope: String? = null
     private var channelRecipientActor: String? = null
     private var channelPhoto: ByteArray? = null
@@ -1166,18 +1172,34 @@ class MainActivity : Activity() {
         put(container, conversation, 3)
         if (::channelText.isInitialized) saveChannelDraft()
         channelComposer = column()
-        val choices = row(channelComposer)
+        channelWrite = linkButton("写消息").apply { setOnClickListener { setChannelEditorOpen(true) } }
+        put(channelComposer, channelWrite, 4)
+        channelEditor = column()
+        val editorTools = row(channelEditor)
+        channelOptionsButton = linkButton("消息选项").apply {
+            setOnClickListener {
+                channelOptionsOpen = !channelOptionsOpen
+                updateChannelComposer()
+            }
+        }
+        addWeighted(editorTools, channelOptionsButton)
+        editorTools.addView(linkButton("收起").apply {
+            setOnClickListener { setChannelEditorOpen(false) }
+        }, LinearLayout.LayoutParams(WRAP, WRAP))
+        channelOptions = column()
+        val choices = row(channelOptions)
         channelRecipientPicker = linkButton("整个频道  ›").apply { setOnClickListener { chooseChannelRecipient() } }
         addWeighted(choices, channelRecipientPicker)
         channelAttach = linkButton("附照片").apply { setOnClickListener { pickNearbyPhoto() } }
         choices.addView(channelAttach, LinearLayout.LayoutParams(WRAP, WRAP))
         channelWantReceipt = CheckBox(this).apply {
-            text = "需要签收"
+            text = "请收件人签收"
             setTextColor(MUTED)
             setTextSize(12f)
         }
-        choices.addView(channelWantReceipt, LinearLayout.LayoutParams(WRAP, WRAP))
-        val inputRow = row(channelComposer)
+        put(channelOptions, channelWantReceipt, 0)
+        put(channelEditor, channelOptions, 0)
+        val inputRow = row(channelEditor)
         channelText = input("发给当前频道", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES).apply {
             filters = arrayOf(InputFilter.LengthFilter(NEARBY_TEXT_LIMIT))
             setSingleLine(false)
@@ -1187,14 +1209,18 @@ class MainActivity : Activity() {
         channelSend = button("发送", primary = true).apply { setOnClickListener { sendChannelText() } }
         inputRow.addView(channelSend, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
         channelSendStatus = text("", 13, MUTED)
-        put(channelComposer, channelSendStatus, 4)
+        put(channelEditor, channelSendStatus, 4)
         channelRadioPermission = linkButton("允许附近设备访问").apply {
             setOnClickListener { nearbyPanel.grantRadios() }
         }
-        put(channelComposer, channelRadioPermission, 2)
+        put(channelEditor, channelRadioPermission, 2)
+        put(channelComposer, channelEditor, 0)
+        channelEditorOpen = false
+        channelOptionsOpen = false
         channelDraftKey = null
         channelComposerScope = null
         channelText.doAfterTextChanged { updateChannelComposer() }
+        channelWantReceipt.setOnCheckedChangeListener { _, _ -> updateChannelComposer() }
         put(container, channelComposer, 8)
         updateChannelComposer()
         responseButton = button("当前任务").apply {
@@ -2741,6 +2767,7 @@ class MainActivity : Activity() {
             nearbyScope(active.localSessionKey, event, target.id) else null
         if (key != channelComposerScope && ::channelText.isInitialized) {
             saveChannelDraft()
+            setChannelEditorOpen(false)
             channelComposerScope = key
             channelRecipientActor = null
             channelPhoto = null
@@ -2826,11 +2853,33 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun setChannelEditorOpen(open: Boolean) {
+        if (channelEditorOpen == open) return
+        channelEditorOpen = open
+        if (!open) {
+            channelOptionsOpen = false
+            channelText.clearFocus()
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                .hideSoftInputFromWindow(channelText.windowToken, 0)
+        }
+        updateChannelComposer()
+        if (open) {
+            channelText.requestFocus()
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                .showSoftInput(channelText, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
     private fun updateChannelComposer() {
         if (!::channelComposer.isInitialized) return
         val group = client?.bound == true && radio?.kind == "group"
         channelComposer.visibility = if (group) View.VISIBLE else View.GONE
         if (!group) return
+        channelWrite.visibility = if (channelEditorOpen) View.GONE else View.VISIBLE
+        channelWrite.text = if (channelText.text.isNullOrBlank() && channelPhoto == null) "写消息" else "继续写消息"
+        channelEditor.visibility = if (channelEditorOpen) View.VISIBLE else View.GONE
+        channelOptions.visibility = if (channelOptionsOpen) View.VISIBLE else View.GONE
+        channelOptionsButton.text = if (channelWantReceipt.isChecked) "消息选项 · 要求签收" else "消息选项"
         val session = nearbyPanel.currentSession()
         val config = currentNearbyCredential()
         val recipient = config?.recipients?.firstOrNull { it.actor == channelRecipientActor }
@@ -2883,7 +2932,7 @@ class MainActivity : Activity() {
             channelWantReceipt.isChecked = false
             channelText.text.clear()
             saveChannelDraft()
-            updateChannelComposer()
+            setChannelEditorOpen(false)
         } catch (_: Exception) {
             channelError("未发出 · 暂时无法保存，请重试")
         }

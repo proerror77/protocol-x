@@ -290,8 +290,10 @@ class Field:
     def channel_info(conn, channel, viewer):
         members = conn.execute("""
             SELECT p.* FROM field_members m JOIN field_people p ON p.id=m.person_id
-            WHERE m.channel_id=? ORDER BY p.name,p.id
-            """, (channel["id"],)).fetchall()
+            WHERE m.channel_id=? AND (? OR NOT EXISTS (
+                SELECT 1 FROM field_suspensions s WHERE s.person_id=p.id
+            )) ORDER BY p.name,p.id
+            """, (channel["id"], channel["kind"] == "direct")).fetchall()
         name = channel["name"]
         if channel["kind"] == "direct":
             name = next(row["name"] for row in members if row["id"] != viewer)
