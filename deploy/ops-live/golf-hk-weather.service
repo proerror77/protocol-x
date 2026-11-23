@@ -1,0 +1,17 @@
+[Unit]
+Description=Publish Hong Kong Observatory readings to the HK TAK weather group
+After=network-online.target opentakserver.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/golf-ops-live/hk-weather-cot.py
+TimeoutStartSec=40
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+LoadCredential=ca.pem:/etc/golf-hk-weather/ca.pem
+LoadCredential=client.pem:/etc/golf-hk-weather/client.pem
+LoadCredential=client.key:/etc/golf-hk-weather/client.key

@@ -1,0 +1,31 @@
+.ops-map-embedded .mantine-AppShell-header,
+.ops-map-embedded .mantine-AppShell-navbar {
+  display: none;
+}
+
+.ops-map-embedded .mantine-AppShell-main {
+  --app-shell-header-offset: 0px;
+  --app-shell-navbar-offset: 0px;
+  padding: 8px;
+}
+
+.ops-map-embedded .leaflet-container {
+  height: calc(100dvh - 50px) !important;
+}
+
+.ops-linked-marker span {
+  display: inline-block;
+  transform: translate(-50%, -100%);
+  border: 2px solid #fff;
+  border-radius: 6px;
+  padding: 4px 7px;
+  background: #214c39;
+  color: #fff;
+  font: 600 11px/1.25 system-ui, sans-serif;
+  box-shadow: 0 1px 5px #192b28a0;
+  white-space: nowrap;
+}
+
+.ops-linked-marker.selected span { background: #15658a; }
+.ops-linked-marker.stale span { background: #665d50; }
+.ops-map-task-choices { display: grid; gap: 5px; }

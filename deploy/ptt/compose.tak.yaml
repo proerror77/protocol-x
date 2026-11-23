@@ -1,0 +1,22 @@
+services:
+  ops:
+    environment:
+      OPS_TAK_EVENT_ID: "${OPS_TAK_EVENT_ID:?Set the TAK activity ID}"
+      OPS_TAK_COT_HOST: "${OPS_TAK_COT_HOST:?Set the OpenTAKServer TLS host}"
+      OPS_TAK_COT_PORT: "${OPS_TAK_COT_PORT:-8089}"
+      OPS_TAK_MARTI_URL: "${OPS_TAK_MARTI_URL:?Set the authenticated HTTPS Marti origin}"
+      OPS_TAK_SENDER_UID: "${OPS_TAK_SENDER_UID:?Set the adapter TAK UID}"
+      OPS_TAK_RECIPIENT_UID: "${OPS_TAK_RECIPIENT_UID:?Set the authorized TAK recipient UID}"
+      OPS_TAK_REPORT_LATITUDE: "${OPS_TAK_REPORT_LATITUDE:-}"
+      OPS_TAK_REPORT_LONGITUDE: "${OPS_TAK_REPORT_LONGITUDE:-}"
+      OPS_TAK_PTT_EVENTS: "${OPS_TAK_PTT_EVENTS:-false}"
+      OPS_TAK_CA_FILE: /run/ops-tak/ca.pem
+      OPS_TAK_CERT_FILE: /run/ops-tak/client.pem
+      OPS_TAK_KEY_FILE: /run/ops-tak/client.key
+    volumes:
+      - type: bind
+        source: "${OPS_TAK_TLS_DIR:?Set the absolute directory containing the adapter TLS files}"
+        target: /run/ops-tak
+        read_only: true
+        bind:
+          create_host_path: false

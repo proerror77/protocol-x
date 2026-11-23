@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#214c39">
+  <title>Golf Operations · 行动指挥中心</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/live.css?v=live-3">
+  <link rel="stylesheet" href="/static/flights.css?v=flights-map-1">
+  <link rel="stylesheet" href="/static/pickup.css">
+  <link rel="stylesheet" href="/static/arrival-desk.css?v=reception-1">
+  <script type="module" src="/static/app.js?v=reception-1"></script>
+</head>
+<body>
+  <div class="demo-bar"><span class="demo-dot"></span><span id="environment-label">合成演练业务数据</span></div>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="行动指挥中心首页"><span class="brand-symbol">G<span>•</span></span><span>OPERATIONS<span class="brand-caption">行动指挥中心</span></span></a>
+      <div class="sidebar-caption">工作空间</div>
+      <nav class="navigation" aria-label="主要导航">
+        <button class="nav-item active" data-view="overview"><span class="nav-icon">◈</span>运行总览<span class="nav-index">01</span></button>
+        <button class="nav-item" data-view="arrivals" hidden><span class="nav-icon" aria-hidden="true">⌖</span>球员接待</button>
+        <button class="nav-item" data-view="flights" hidden><span class="nav-icon" aria-hidden="true">✈</span>航班到港</button>
+        <button class="nav-item" data-view="communication"><span class="nav-icon">◷</span>团队汇报<span class="nav-index">02</span></button>
+        <button class="nav-item" data-view="actions"><span class="nav-icon">↗</span>行动处理<span class="nav-index">03</span></button>
+        <button class="nav-item" data-view="receipts"><span class="nav-icon">≡</span>执行回执<span class="nav-index">04</span></button>
+      </nav>
+      <div class="sidebar-bottom"><span class="small-label">REUSABLE OPERATIONS</span><strong>同一应用，不同活动。</strong><p>界面依赖能力契约，活动通过 Ontology Binding 提供数据与行动。</p><span class="version-tag">STARTER v0.1</span></div>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="context-picker"><label for="event-select">当前活动</label><select id="event-select" aria-label="切换活动"><option>加载活动…</option></select></div>
+        <div class="topbar-actions"><button class="button button-secondary flight-top-button" type="button" data-view="arrivals" hidden>接待</button><button class="button button-secondary flight-top-button" type="button" data-view="flights" hidden>航班到港</button><div class="role-switch" role="group" aria-label="演示身份"><button id="role-dispatcher" class="selected" data-role="dispatcher">指挥员</button><button id="role-staff" data-role="staff">工作人员</button></div><button id="pilot-signout" class="button button-secondary" hidden>断开</button><button id="refresh-button" class="icon-button" title="重新读取数据" aria-label="刷新数据">↻</button><span class="avatar" id="role-avatar">指</span></div>
+      </header>
+      <main>
+        <div class="page-heading"><div><div class="eyebrow">GOLF OPERATIONS COMMAND CENTER</div><h1 id="page-title">让现场的每一步，都有回音。</h1><p id="page-subtitle">汇报、建议、确认与回执，沿同一条业务链路协作。</p></div><div class="connection"><span class="status-dot" id="connection-dot"></span><span id="connection-label" aria-live="polite">正在连接</span><small id="last-updated">—</small></div></div>
+        <div id="error-banner" class="error-banner" role="alert" hidden><span id="error-text"></span><button id="dismiss-error" aria-label="关闭提示">×</button></div>
+        <div id="success-banner" class="success-banner" role="status" hidden></div>
+        <section class="panel arrival-desk" id="arrival-desk" aria-labelledby="arrival-heading" hidden>
+          <div class="arrival-desk-header">
+            <h2 id="arrival-heading">球员接待</h2>
+            <div class="arrival-controls">
+              <button type="button" id="arrival-team-open" class="button button-secondary" hidden>接待人员</button>
+              <button type="button" id="arrival-new" class="button button-primary" hidden>安排球员接待</button>
+            </div>
+          </div>
+          <div id="arrival-notice" class="arrival-notice" role="status" aria-live="polite" hidden></div>
+          <p id="arrival-empty" class="arrival-empty"></p>
+          <div class="arrival-cards" id="arrival-cards"></div>
+        </section>
+        <section class="panel pickup-desk" id="pickup-desk" aria-labelledby="pickup-heading" hidden>
+          <div class="pickup-heading"><h2 id="pickup-heading">接机航班提醒</h2><small>机场状态 · 香港时间</small></div>
+          <div class="pickup-reminder-list" id="pickup-reminder-list" role="status" aria-live="polite"></div>
+          <div id="pickup-link-list"></div>
+        </section>
+        <section class="panel flight-board" id="flight-board" aria-labelledby="flight-heading" hidden>
+          <div class="flight-hero">
+            <div><span class="flight-code">HKG / ARRIVALS</span><h2 id="flight-heading">香港客运到港</h2><small id="flight-date"></small></div>
+            <div class="flight-links">
+              <a href="https://www.hongkongairport.com/en/flights/arrivals/passenger.page" target="_blank" rel="noopener">机场官方看板 ↗</a>
+              <a href="http://127.0.0.1:18081/dashboard" id="flight-tak-admin" target="_blank" rel="noopener" hidden>TAK 管理台 ↗</a>
+            </div>
+          </div>
+          <div class="flight-tools">
+            <label for="flight-search">查找</label><input id="flight-search" type="search" placeholder="航班号或始发机场">
+            <label for="flight-filter">状态</label><select id="flight-filter">
+              <option value="">全部</option><option value="estimated">有预计时间</option>
+              <option value="landed">已落地</option><option value="at_gate">已到达机位</option>
+              <option value="cancelled">取消</option>
+            </select>
+            <button id="flight-refresh" class="button button-secondary" type="button">刷新</button>
+            <span id="flight-count"></span>
+          </div>
+          <p class="flight-summary" id="flight-summary" role="status">正在读取香港机场数据…</p>
+          <p class="flight-summary" id="flight-focus-message" role="status"></p>
+          <div class="flight-scroll">
+            <table class="flight-table" aria-label="香港客运到港航班">
+              <thead><tr><th>航班</th><th>始发机场</th><th>计划</th><th>预计</th><th>实际</th><th>状态</th><th>到港厅 / 转盘</th></tr></thead>
+              <tbody id="flight-arrivals"></tbody>
+            </table>
+          </div>
+          <div class="flight-footer"><button id="flight-more" class="button button-secondary" type="button" hidden>显示更多航班</button></div>
+        </section>
+        <section class="live-desk" id="live-desk" aria-label="现场态势" hidden>
+          <section class="panel live-map-panel" id="native-tak-panel" hidden>
+            <div class="panel-header">
+              <h2>OpenTAKServer 地图</h2>
+              <div class="live-map-meta">
+                <span id="native-tak-status" role="status">正在加载地图</span>
+                <span id="tak-location-status">等待位置连接</span>
+                <a href="http://127.0.0.1:18081/map" target="_blank" rel="noopener">单独打开地图 ↗</a>
+              </div>
+            </div>
+            <div id="tak-focus-feedback" class="tak-focus-feedback" role="status"></div>
+            <iframe id="native-tak-frame" title="OpenTAKServer 原生地图" referrerpolicy="origin"
+                    sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+                    allow="fullscreen"></iframe>
+          </section>
+          <aside class="panel live-rail" aria-labelledby="live-feed-heading">
+            <h2 id="live-feed-heading">最近汇报与回执</h2>
+            <ul id="live-feed" class="live-feed"></ul>
+          </aside>
+        </section>
+        <section class="stats-grid" aria-label="运行摘要" id="stats-section">
+          <div class="stat-card"><span class="stat-label">开放任务</span><strong id="stat-tasks">—</strong><span class="stat-note">保留实际服务进度</span></div>
+          <div class="stat-card amber"><span class="stat-label">待确认建议</span><strong id="stat-proposals">—</strong><span class="stat-note">确认后才会改变业务状态</span></div>
+          <div class="stat-card"><span class="stat-label">团队汇报</span><strong id="stat-messages">—</strong><span class="stat-note">原文与关联对象可追溯</span></div>
+          <div class="stat-card"><span class="stat-label">系统写入记录</span><strong id="stat-receipts">—</strong><span class="stat-note">系统写入成功，不代表现场完成</span></div>
+        </section>
+        <div class="workspace-grid" id="workspace-grid">
+          <div class="primary-column">
+            <section class="panel tasks-panel" data-panel="tasks"><div class="panel-header"><div><div class="section-kicker">WORK ITEMS</div><h2 id="tasks-heading">服务任务</h2></div><span id="task-count" class="count-badge">0</span></div><div class="panel-explanation">选择任务后，汇报会关联到对应业务对象。</div><div id="task-list" class="task-list"><div class="empty-state">正在读取任务…</div></div></section>
+            <section class="panel communication-panel" data-panel="communication"><div class="panel-header"><div><div class="section-kicker">TEAM COMMUNICATION</div><h2>团队汇报</h2></div><span class="outline-tag">持久化文字记录</span></div><div id="message-list" class="message-list" aria-label="团队消息"></div><form id="message-form" class="message-composer"><div class="composer-context"><label for="subject-select">关联任务</label><select id="subject-select"><option value="">未关联</option></select></div><textarea id="message-text" rows="3" maxlength="2000" placeholder="报告现场事实，例如：当前资源故障，请协调备用资源。" aria-label="汇报内容" required></textarea><div class="composer-bottom"><button type="button" id="fill-sample" class="text-button">填入演练汇报</button><button type="submit" class="button button-primary" id="send-message">发送汇报 <span>↑</span></button></div><p class="input-note">汇报只保存证据，不会自动调度。语音转写将在接入 LiveKit 与 ASR 后加入。</p></form></section>
+          </div>
+          <div class="secondary-column">
+            <section class="panel actions-panel" data-panel="actions"><div class="panel-header"><div><div class="section-kicker">ACTION QUEUE</div><h2>待确认行动</h2></div><span class="amber-tag">规则演示</span></div><p class="panel-explanation">建议保留来源证据。执行时重新检查权限、版本与资源。</p><div id="proposal-list" class="proposal-list"></div></section>
+            <section class="panel integrations-panel" data-panel="integrations"><div class="panel-header"><div><div class="section-kicker">CONNECTIONS</div><h2>接入进度</h2></div></div><div id="integration-list" class="integration-list"></div><p class="input-note integration-note">PTT 频道在 Android 工作人员端使用。</p></section>
+            <section class="panel receipts-panel" data-panel="receipts"><div class="panel-header"><div><div class="section-kicker">EXECUTION RECEIPTS</div><h2>系统执行回执</h2></div><span class="outline-tag">可追溯</span></div><p class="panel-explanation">查看接单、资源调整、现场节点确认及操作记录。</p><div id="receipt-list" class="receipt-list"></div></section>
+          </div>
+        </div>
+        <footer class="workspace-footer"><div><span class="footer-dot"></span><span id="ontology-context">正在加载 Ontology Binding…</span></div><span>业务状态 ≠ 现场事实</span></footer>
+      </main>
+    </div>
+  </div>
+  <dialog id="arrival-editor" class="arrival-dialog" aria-labelledby="arrival-editor-title">
+    <h2 id="arrival-editor-title">安排球员接待</h2>
+    <form id="arrival-form">
+      <div id="arrival-form-fields"></div>
+      <h3>球员与接机识别照</h3>
+      <div id="arrival-roster"></div>
+      <button type="button" class="button button-secondary" id="arrival-add-player">添加球员</button>
+      <p id="arrival-edit-error" class="arrival-warning" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" id="arrival-editor-cancel" class="button button-secondary">关闭</button>
+        <button type="submit" id="arrival-save" class="button button-primary">保存接待安排</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="arrival-team" class="arrival-dialog" aria-labelledby="arrival-team-title">
+    <h2 id="arrival-team-title">登记接待人员</h2>
+    <form id="arrival-team-form">
+      <div class="arrival-form-grid">
+        <label>姓名<input name="name" maxlength="32" required></label>
+        <label>现场呼号<input name="callsign" maxlength="24" required></label>
+        <label>角色<select name="role"><option value="staff">接机员或司机</option><option value="dispatcher">调度员</option></select></label>
+      </div>
+      <p id="arrival-team-error" class="arrival-warning" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" id="arrival-team-close" class="button button-secondary">关闭</button>
+        <button type="submit" id="arrival-team-save" class="button button-primary">生成个人绑定码</button>
+      </div>
+    </form>
+    <div id="arrival-team-reissue" class="arrival-form-grid">
+      <label>已有接待人员<select id="arrival-team-person"></select></label>
+      <button type="button" id="arrival-team-invite" class="button button-secondary">补发个人绑定码</button>
+    </div>
+    <div id="arrival-team-result" hidden>
+      <label>个人绑定码<input id="arrival-team-code" readonly autocomplete="off"></label>
+      <p>请私下交给本人使用。绑定码 15 分钟内有效，可使用一次。</p>
+    </div>
+  </dialog>
+  <dialog id="pickup-bind-dialog" aria-labelledby="pickup-bind-title">
+    <h2 id="pickup-bind-title">关联接机任务</h2>
+    <form id="pickup-bind-form">
+      <label for="pickup-bind-target">接机任务</label>
+      <select id="pickup-bind-target" required></select>
+      <p class="pickup-error" id="pickup-bind-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" type="button" id="pickup-bind-cancel">取消</button>
+        <button class="button button-primary" type="submit" id="pickup-bind-save">保存关联并关注航班</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="pickup-detail-dialog" aria-labelledby="pickup-detail-title">
+    <h2 id="pickup-detail-title">接机任务</h2>
+    <dl id="pickup-detail-fields" class="pickup-detail-fields"></dl>
+    <form method="dialog" class="dialog-actions">
+      <button class="button button-secondary">关闭</button>
+      <button class="button button-primary" type="button" id="pickup-open-task">打开任务卡</button>
+    </form>
+  </dialog>
+  <dialog id="pilot-login" aria-labelledby="pilot-login-title">
+    <h2 id="pilot-login-title">连接试点服务</h2>
+    <form id="pilot-login-form">
+      <label for="pilot-code">试点访问码或个人绑定码</label>
+      <input id="pilot-code" type="password" autocomplete="off" minlength="22" maxlength="128" pattern="[A-Za-z0-9_\-]+" required>
+      <label><input id="pilot-bind-person" type="checkbox"> 使用个人绑定码</label>
+      <p id="pilot-login-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button id="pilot-connect" class="button button-primary" type="submit">连接</button></div>
+    </form>
+  </dialog>
+  <dialog id="tak-dialog" aria-labelledby="tak-title">
+    <h2 id="tak-title">共享汇报到 OpenTAKServer</h2>
+    <p>TAK 接收端 UID <strong id="tak-recipient"></strong></p>
+    <p id="tak-reference" hidden></p>
+    <form id="tak-share-form">
+      <label for="tak-excerpt">共享原文片段（最多 255 字）</label>
+      <textarea id="tak-excerpt" rows="4" required></textarea>
+      <div id="tak-error" class="dialog-error" role="alert" hidden></div>
+      <div class="dialog-actions">
+        <button id="tak-cancel" type="button" class="button button-secondary">取消</button>
+        <button id="tak-submit" class="button button-primary">确认共享</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="action-dialog"><form method="dialog" class="dialog-close-form"><button aria-label="关闭确认">×</button></form><div class="section-kicker">CONFIRM ACTION</div><h2 id="dialog-title">确认行动</h2><p id="dialog-description"></p><dl id="dialog-details"></dl><p class="dialog-note">确认后写入所选任务行动。改时与换车会保留任务当前的交接进度。</p><div id="dialog-error" class="dialog-error" role="alert" hidden></div><div class="dialog-actions"><button id="dialog-cancel" class="button button-secondary">取消</button><button id="dialog-confirm" class="button button-primary">确认执行</button></div></dialog>
+</body>
+</html>

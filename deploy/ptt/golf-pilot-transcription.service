@@ -1,0 +1,29 @@
+[Unit]
+Description=Local transcription for the golf pilot microphone channel
+After=golf-livekit.service golf-ops-pilot.service
+Wants=golf-livekit.service golf-ops-pilot.service
+
+[Service]
+Type=simple
+User=golf-ops
+Group=golf-ops
+WorkingDirectory=/opt/golf-ops-pilot
+EnvironmentFile=/etc/golf-ops-pilot/service.env
+Environment=HF_HUB_OFFLINE=1
+Environment=OMP_NUM_THREADS=1
+ExecStart=/opt/golf-pilot-transcription/bin/python -m app.transcribe_ptt
+Restart=always
+RestartSec=4s
+TimeoutStopSec=15s
+UMask=0077
+Nice=5
+CPUQuota=90%
+MemoryMax=850M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/golf-ops-pilot
+
+[Install]
+WantedBy=multi-user.target

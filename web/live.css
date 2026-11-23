@@ -1,0 +1,95 @@
+.live-desk {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.live-desk.has-map {
+  grid-template-columns: minmax(0, 1fr) clamp(175px, 24%, 285px);
+}
+
+.live-map-panel {
+  min-width: 0;
+  background: #eaf0e8;
+}
+
+.live-map-panel .panel-header {
+  padding: 13px 16px;
+  background: #fff;
+}
+
+.live-map-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 12px;
+  font-size: 11px;
+  color: #506558;
+}
+
+.live-map-meta a {
+  color: var(--green);
+  text-underline-offset: 3px;
+}
+
+.tak-focus-feedback:not(:empty) {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #214c39;
+  background: #e9f1e9;
+}
+
+.task-location-tools {
+  display: flex;
+  gap: 6px;
+}
+
+.task-card:focus { outline: 2px solid #6b9979; outline-offset: 2px; }
+
+.live-map-panel iframe {
+  display: block;
+  width: 100%;
+  height: clamp(400px, 57vh, 660px);
+  border: 0;
+  background: #f4f7f1;
+}
+
+.live-rail {
+  padding: 16px;
+  align-self: start;
+}
+
+.live-feed {
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.live-feed li {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.live-feed time {
+  color: #536658;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-feed button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: start;
+}
+
+@media (max-width: 720px) {
+  .live-desk.has-map { grid-template-columns: minmax(0, 1fr); }
+}

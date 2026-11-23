@@ -1,0 +1,119 @@
+.golf-tak-admin {
+  --golf-ink: #17271f;
+  --golf-faint: #587166;
+  --golf-paper: #f3f6f4;
+  --golf-line: #dce6e0;
+  --golf-evergreen: #183d35;
+  --golf-leaf: #bad9c8;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.golf-tak-admin .mantine-AppShell-header {
+  background: var(--golf-evergreen);
+  border-bottom-color: #264f43;
+}
+
+.golf-tak-admin .mantine-AppShell-navbar {
+  background: #ecf3ef;
+  border-right-color: var(--golf-line);
+  overflow-y: auto;
+}
+
+.golf-tak-admin .golf-admin-original-mark { display: none; }
+
+.golf-admin-wordmark {
+  display: inline-flex;
+  gap: 9px;
+  align-items: center;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: .02em;
+}
+
+.golf-admin-mark {
+  padding: 4px 6px;
+  background: #d1e7d9;
+  color: #163930;
+  border-radius: 5px;
+  font: 600 11px/1.4 ui-monospace, monospace;
+}
+
+.golf-admin-menu { padding: 18px 0 5px; }
+.golf-admin-menu section { margin: 0 0 17px; }
+.golf-admin-menu h2 {
+  margin: 0 0 7px;
+  padding-inline: 9px;
+  color: var(--golf-faint);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.golf-admin-route {
+  display: block;
+  padding: 7px 9px;
+  color: #2f5245;
+  border-radius: 5px;
+  text-decoration: none;
+  font-size: 13px;
+}
+.golf-admin-route:hover { background: #dcebe2; }
+.golf-admin-route[aria-current="page"] { background: #285346; color: #fff; font-weight: 650; }
+.golf-tak-admin .golf-admin-replaced-link { display: none; }
+.golf-tak-admin :is(.golf-admin-route, .golf-admin-shortcut, .golf-admin-flight-action):focus-visible {
+  outline: 3px solid #619f87;
+  outline-offset: 2px;
+}
+
+.golf-admin-home { margin: 0 0 22px; color: var(--golf-ink); }
+.golf-admin-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 30px 32px;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(108deg, #1b4138, #284c44 65%, #315851);
+}
+.golf-admin-site { color: var(--golf-leaf); font: 650 12px/1.5 ui-monospace, monospace; }
+.golf-admin-hero h1 { margin: 6px 0 5px; font-size: clamp(25px, 3vw, 41px); letter-spacing: -.02em; }
+.golf-admin-hero p { margin: 0; color: #d6e7dc; font-size: 13px; }
+.golf-admin-hero-status { display: flex; align-items: flex-end; gap: 9px; flex-direction: column; }
+.golf-admin-service {
+  padding: 3px 8px;
+  background: #405d54;
+  color: #fff;
+  border-radius: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.golf-admin-service[data-state="ready"] { background: #cfead9; color: #1c4e3a; }
+.golf-admin-service[data-state="failed"] { background: #f4deca; color: #703919; }
+.golf-admin-flight-action { color: #fff; text-underline-offset: 3px; font-size: 13px; }
+.golf-admin-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(175px, 100%), 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.golf-admin-shortcut {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 78px;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid var(--golf-line);
+  border-radius: 7px;
+  text-decoration: none;
+  color: var(--golf-ink);
+}
+.golf-admin-shortcut:hover { border-color: #74a08c; }
+.golf-admin-shortcut strong { font-size: 14px; }
+.golf-admin-shortcut span { font-size: 12px; color: var(--golf-faint); line-height: 1.55; }
+
+@media (max-width: 720px) {
+  .golf-admin-hero { align-items: flex-start; flex-direction: column; padding: 19px; }
+  .golf-admin-hero-status { align-items: flex-start; }
+}

@@ -1,0 +1,72 @@
+.golf-aircraft-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 1px 6px #24374155;
+  color: #24423a;
+  font: 600 11px/1.45 system-ui, sans-serif;
+}
+.golf-aircraft-control button {
+  padding: 2px 5px;
+  border: 1px solid #b6c9c2;
+  border-radius: 4px;
+  background: white;
+  color: #24423a;
+  cursor: pointer;
+}
+.golf-aircraft-control button[aria-pressed="true"] { background: #254e44; color: white; }
+.golf-aircraft-status { font-variant-numeric: tabular-nums; }
+.golf-aircraft-icon span {
+  display: inline-block;
+  padding: 2px 4px;
+  border: 1px solid #fff;
+  border-radius: 4px;
+  background: #125179;
+  color: #fff;
+  font: 650 10px/1.2 system-ui, sans-serif;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 3px #12273170;
+}
+.golf-aircraft-stale span { background: #536675; }
+.golf-aircraft-popup { display: grid; gap: 4px; }
+
+.golf-weather-control {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  gap: 3px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 1px 6px #24374155;
+  color: #23475a;
+  font: 600 11px/1.45 system-ui, sans-serif;
+}
+.golf-weather-control select {
+  max-width: 100%;
+  padding: 2px 4px;
+  border: 1px solid #abc4cc;
+  border-radius: 4px;
+  color: inherit;
+  background: #f6fbfc;
+}
+.golf-weather-status { font-variant-numeric: tabular-nums; }
+.golf-weather-marker span {
+  display: inline-block;
+  padding: 3px 5px;
+  border: 1px solid #7196a7;
+  border-radius: 4px;
+  background: #e8f4f8;
+  color: #204d62;
+  font: 650 10px/1.2 system-ui, sans-serif;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 3px #12273140;
+}
+.golf-weather-marker.golf-weather-wet span { background: #164975; color: #fff; }
+.golf-weather-popup { display: grid; gap: 4px; }

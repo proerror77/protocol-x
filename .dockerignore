@@ -1,0 +1,10 @@
+.venv
+data
+__pycache__
+*.pyc
+tests
+.git
+android
+deploy
+docs
+.env

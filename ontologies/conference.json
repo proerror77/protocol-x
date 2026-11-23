@@ -1,0 +1,30 @@
+{
+  "ontology_id": "conference.v1",
+  "label": "会议现场 Ontology",
+  "schema_version": "1.0.0",
+  "binding_version": "1.0.0",
+  "binding": {
+    "task_type": "Session", "resource_type": "Room",
+    "title": "session_name", "description": "brief", "subject": "speaker",
+    "owner": "steward", "status": "workflow_phase", "resource": "room_id",
+    "progress": "milestones", "required_capacity": "expected_attendees",
+    "resource_label": "room_name", "resource_capacity": "seat_capacity", "resource_ready": "operational_state",
+    "ready_value": "ready", "initial_status": "scheduled", "acknowledged_status": "accepted",
+    "status_labels": {"scheduled": "待负责人确认", "accepted": "负责人已确认"},
+    "replace_label": "调整会议室", "domain_replace_action": "RebookSessionRoom",
+    "acknowledge_label": "确认负责", "domain_acknowledge_action": "AcceptSessionStewardship",
+    "field_response_milestones": ["出发", "到场", "交接"],
+    "domain_confirm_progress_action": "ConfirmSessionMilestone"
+  },
+  "events": [{
+    "id": "conference-demo", "title": "AI Forum · 复用验证活动",
+    "objects": [
+      {"object_type": "Session", "id": "session-101", "data": {"session_name": "分论坛 · AI 现场协作", "brief": "同一套 App 加载独立会议 Ontology，调整场地不等于参会者已经转移。", "speaker": "王敏（合成资料）", "steward": "demo-staff", "workflow_phase": "scheduled", "room_id": "room-a", "expected_attendees": 40, "milestones": [{"label":"议程确认","status":"done"},{"label":"设备检查","status":"current"},{"label":"来宾入场","status":"pending"},{"label":"分论坛开始","status":"pending"}]}},
+      {"object_type": "Session", "id": "session-102", "data": {"session_name": "工作坊 · 数据治理", "brief": "会议室 C 已被占用，用于验证资源冲突检查。", "speaker": "李岚（合成资料）", "steward": "demo-other", "workflow_phase": "scheduled", "room_id": "room-c", "expected_attendees": 20, "milestones": [{"label":"设备检查","status":"current"},{"label":"来宾入场","status":"pending"}]}},
+      {"object_type": "Room", "id": "room-a", "data": {"room_name":"会议室 A", "seat_capacity":60,"operational_state":"ready"}},
+      {"object_type": "Room", "id": "room-b", "data": {"room_name":"会议室 B（备用）", "seat_capacity":80,"operational_state":"ready"}},
+      {"object_type": "Room", "id": "room-c", "data": {"room_name":"会议室 C（已分配）", "seat_capacity":60,"operational_state":"ready"}},
+      {"object_type": "Room", "id": "room-small", "data": {"room_name":"洽谈室（容量不足）", "seat_capacity":8,"operational_state":"ready"}}
+    ]
+  }]
+}

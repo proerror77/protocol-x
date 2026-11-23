@@ -1,0 +1,3 @@
+-r requirements-pilot.txt
+livekit==1.3.0
+faster-whisper==1.2.1

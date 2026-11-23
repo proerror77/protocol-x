@@ -1,0 +1,51 @@
+.flight-board {
+  margin: 0 0 24px;
+  overflow: clip;
+}
+
+.flight-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px 22px;
+  background: #203e36;
+  color: #fff;
+}
+
+.flight-hero h2 { font-size: 22px; margin: 4px 0; }
+.flight-code { color: #c0e9d4; font: 600 11px/1.4 ui-monospace, monospace; }
+.flight-links { display: flex; align-items: center; gap: 12px; }
+.flight-links a { color: #f4fff8; text-underline-offset: 3px; font-size: 12px; }
+.flight-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 16px 22px; }
+.flight-tools input, .flight-tools select {
+  border: 1px solid #cfd9cf;
+  border-radius: 6px;
+  padding: 7px 9px;
+  color: #243b31;
+  background: #fff;
+}
+
+.flight-summary { margin: 0 22px 12px; font-size: 12px; color: #456151; }
+.flight-summary.flight-stale { color: #8a541d; }
+.flight-scroll { overflow: auto; max-height: 42vh; }
+.flight-table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+.flight-table thead { background: #eef3ee; color: #364a3e; }
+.flight-table th, .flight-table td { padding: 10px 15px; border-bottom: 1px solid #e6ebe5; text-align: start; }
+.flight-table tbody td:first-child { font-weight: 650; }
+.flight-table th { position: sticky; top: 0; background: #eef3ee; }
+.flight-table tbody tr.flight-selected { background: #e8f4ee; }
+.flight-locate { border: 0; background: none; color: #1b5b46; text-decoration: underline; padding: 3px 2px; }
+#flight-focus-message:empty { display: none; }
+.flight-table td[data-status="landed"], .flight-table td[data-status="at_gate"] { color: #246047; }
+.flight-table td[data-status="estimated"] { color: #76551b; }
+.flight-table td[data-status="cancelled"] { color: #9b342d; }
+.flight-footer { padding: 12px 22px; }
+.flight-top-button { padding: 6px 9px; white-space: nowrap; }
+
+@media(max-width: 680px) {
+  .flight-hero, .flight-tools { padding: 12px; }
+  .flight-links { flex-direction: column; gap: 6px; }
+  .flight-summary { margin-inline: 12px; }
+  .flight-tools input { max-width: 170px; }
+}

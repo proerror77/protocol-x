@@ -1,0 +1,47 @@
+name: golf-ops-ptt
+services:
+  ops:
+    build:
+      context: ../..
+      args:
+        OPS_REQUIREMENTS: requirements-pilot.txt
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OPS_DB_PATH: /opt/golf-ops/data/ops.db
+      OPS_PILOT_DISPATCHER_TOKEN: "${OPS_PILOT_DISPATCHER_TOKEN:?Set the dispatcher token in pilot.env}"
+      OPS_PILOT_STAFF_TOKEN: "${OPS_PILOT_STAFF_TOKEN:?Set the staff token in pilot.env}"
+      OPS_LIVEKIT_SERVER_URL: http://livekit:7880
+      OPS_LIVEKIT_CLIENT_URL: ws://10.0.2.2:7880
+      OPS_LIVEKIT_API_KEY: "${OPS_LIVEKIT_API_KEY:?Set the LiveKit API key in pilot.env}"
+      OPS_LIVEKIT_API_SECRET: "${OPS_LIVEKIT_API_SECRET:?Set the LiveKit API secret in pilot.env}"
+    volumes:
+      - pilot-data:/opt/golf-ops/data
+    depends_on:
+      - livekit
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+  livekit:
+    image: livekit/livekit-server:v1.13.0
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${OPS_LIVEKIT_API_KEY:?Set the LiveKit API key in pilot.env}: ${OPS_LIVEKIT_API_SECRET:?Set the LiveKit API secret in pilot.env}"
+    ports:
+      - "127.0.0.1:7881:7881/tcp"
+      - "127.0.0.1:7882:7882/udp"
+    volumes:
+      - ./livekit-emulator.yaml:/etc/livekit.yaml:ro
+  signaling:
+    image: nginx:1.30.7-alpine
+    ports:
+      - "127.0.0.1:7880:8080"
+    volumes:
+      - ./signaling.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - ops
+      - livekit
+volumes:
+  pilot-data:
