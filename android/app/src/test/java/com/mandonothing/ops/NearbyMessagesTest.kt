@@ -71,9 +71,19 @@ class NearbyMessagesTest {
     }
 
     @Test
-    fun queuedOrdinaryTextCannotUseTheAssistanceOrConfirmationCapacity() {
+    fun channelTextAndPrivateMessagesRequireManualConfirmation() {
+        assertTrue(nearbyRequiresConfirmation("集合点改到三号门", "", hasAudio = false, assistance = false))
+        assertTrue(nearbyRequiresConfirmation("", "YWJj", hasAudio = false, assistance = false))
+        assertFalse(nearbyRequiresConfirmation(" ", "", hasAudio = false, assistance = false))
+        assertFalse(nearbyRequiresConfirmation("语音留言", "", hasAudio = true, assistance = false))
+        assertFalse(nearbyRequiresConfirmation("求助", "", hasAudio = false, assistance = true))
+    }
+
+    @Test
+    fun textRequiringConfirmationStillLeavesRoomForAssistanceAndReceipts() {
         val now = NEARBY_SEND_WINDOW * 5
-        val pending = (1..24).map { row(it, now - it, sender = "my-device") }
+        val pending = (1..24).map { row(it, now - it, sender = "my-device").copy(confirmationRequired = true) }
+        assertTrue(pending.all { !it.priority })
         assertFalse(nearbyCanQueue(pending, "my-device", priority = false, control = false, now = now))
         assertTrue(nearbyCanQueue(pending, "my-device", priority = true, control = false, now = now))
         assertTrue(nearbyCanQueue(pending, "my-device", priority = true, control = true, now = now))

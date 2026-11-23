@@ -102,7 +102,7 @@ internal data class NearbyMessage(
 ) {
     val isControl get() = confirmationFor.isNotEmpty() || receiptFor.isNotEmpty()
     val isPrivate get() = sealedPayload.isNotEmpty()
-    val priority get() = isControl || assistance || confirmationRequired
+    val priority get() = isControl || assistance
     private val extended get() = isControl || isPrivate || confirmationRequired || recipient.isNotEmpty()
     val delivery get() = nearbyDelivery(received, attemptedVia, expired)
 
@@ -247,6 +247,9 @@ internal fun nearbyCanQueue(entries: List<NearbyMessage>, sender: String, priori
     } < limit
 }
 
+internal fun nearbyRequiresConfirmation(text: String, sealedPayload: String, hasAudio: Boolean, assistance: Boolean) =
+    !assistance && !hasAudio && (text.isNotBlank() || sealedPayload.isNotEmpty())
+
 internal class NearbyMessages(context: Context, config: NearbyConfig, private val identity: NearbyIdentity) {
     @Volatile private var credential = config
     val voiceEnabled get() = credential.voiceEnabled
@@ -277,11 +280,11 @@ internal class NearbyMessages(context: Context, config: NearbyConfig, private va
     fun isPrivateAddressedToMe(message: NearbyMessage): Boolean = message.isPrivate && message.recipient == actor
 
     @Synchronized fun send(text: String, audio: ByteArray? = null, assistance: Boolean = false,
-                           id: String = UUID.randomUUID().toString(), confirmationRequired: Boolean = false,
-                           recipient: String = "", sealedPayload: String = "", confirmationFor: String = "",
-                           receiptFor: String = ""): String {
+                           id: String = UUID.randomUUID().toString(),
+                           recipient: String = "", sealedPayload: String = ""): String {
+        val confirmationRequired = nearbyRequiresConfirmation(text, sealedPayload, audio != null, assistance)
         return enqueue(text, audio, assistance, id, confirmationRequired, recipient, sealedPayload,
-            confirmationFor, receiptFor, null)
+            "", "", null)
     }
 
     private fun enqueue(text: String, audio: ByteArray?, assistance: Boolean, id: String,

@@ -35,7 +35,6 @@ import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -75,14 +74,12 @@ class MainActivity : Activity() {
     private lateinit var channelWrite: Button
     private lateinit var channelEditor: LinearLayout
     private lateinit var channelOptions: LinearLayout
-    private lateinit var channelOptionsButton: Button
     private lateinit var channelText: EditText
     private lateinit var channelSend: Button
     private lateinit var channelSendStatus: TextView
     private lateinit var channelRadioPermission: Button
     private lateinit var channelRecipientPicker: Button
     private lateinit var channelAttach: Button
-    private lateinit var channelWantReceipt: CheckBox
     private var channelEditorOpen = false
     private var channelOptionsOpen = false
     private var channelComposerScope: String? = null
@@ -1176,7 +1173,7 @@ class MainActivity : Activity() {
         put(channelComposer, channelWrite, 4)
         channelEditor = column()
         val editorTools = row(channelEditor)
-        channelOptionsButton = linkButton("消息选项").apply {
+        val channelOptionsButton = linkButton("消息选项").apply {
             setOnClickListener {
                 channelOptionsOpen = !channelOptionsOpen
                 updateChannelComposer()
@@ -1192,12 +1189,6 @@ class MainActivity : Activity() {
         addWeighted(choices, channelRecipientPicker)
         channelAttach = linkButton("附照片").apply { setOnClickListener { pickNearbyPhoto() } }
         choices.addView(channelAttach, LinearLayout.LayoutParams(WRAP, WRAP))
-        channelWantReceipt = CheckBox(this).apply {
-            text = "请收件人签收"
-            setTextColor(MUTED)
-            setTextSize(12f)
-        }
-        put(channelOptions, channelWantReceipt, 0)
         put(channelEditor, channelOptions, 0)
         val inputRow = row(channelEditor)
         channelText = input("发给当前频道", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES).apply {
@@ -1220,7 +1211,6 @@ class MainActivity : Activity() {
         channelDraftKey = null
         channelComposerScope = null
         channelText.doAfterTextChanged { updateChannelComposer() }
-        channelWantReceipt.setOnCheckedChangeListener { _, _ -> updateChannelComposer() }
         put(container, channelComposer, 8)
         updateChannelComposer()
         responseButton = button("当前任务").apply {
@@ -2445,7 +2435,6 @@ class MainActivity : Activity() {
             .toList().takeLast(24).mapNotNull { message ->
                 val privateMessage = if (message.isPrivate) readPrivateMessage(message) ?: return@mapNotNull null else null
                 val confirmations = current.confirmations(message.id)
-                val actors = confirmations.map { it.actor }.toSet()
                 JSONObject().put("source", "nearby").put("created_at", Instant.ofEpochMilli(message.time).toString())
                     .put("id", message.id).put("name", message.name).put("mine", message.sender == current.sender)
                     .put("text", privateMessage?.text ?: message.text)
@@ -2454,7 +2443,8 @@ class MainActivity : Activity() {
                     .put("private", message.isPrivate)
                     .put("photo", privateMessage?.photo?.let(java.util.Base64.getEncoder()::encodeToString))
                     .put("needs_receipt", message.confirmationRequired)
-                    .put("confirmed_by_me", current.actor in actors)
+                    .put("confirmed_by_me", confirmations.any { it.actor == current.actor })
+                    .put("confirmed_count", confirmations.size)
                     .put("confirmed_by", confirmations.map { it.name }.distinct().joinToString("、"))
                     .put("route", (if (message.received || message.sender != current.sender)
                         message.deliveredVia else message.attemptedVia)?.name)
@@ -2548,15 +2538,14 @@ class MainActivity : Activity() {
         }
         if (item.optBoolean("needs_receipt")) {
             val confirmed = item.optString("confirmed_by")
-            if (mine) put(bubble, text(if (confirmed.isEmpty()) "等待签收" else "已签收 · $confirmed", 12,
-                if (confirmed.isEmpty()) ACCENT else ONLINE), 3)
+            val count = item.optInt("confirmed_count")
+            if (mine) put(bubble, text(if (count == 0) "等待签收" else "$count 人已签收 · $confirmed", 12,
+                if (count == 0) ACCENT else ONLINE), 3)
             else if (item.optBoolean("confirmed_by_me")) put(bubble, text("已签收", 12, ONLINE), 3)
-            else put(bubble, linkButton("确认收到").apply {
+            else put(bubble, linkButton("签收").apply {
                 setOnClickListener {
-                    try {
-                        check(nearbyPanel.currentSession()?.confirm(item.getString("id")) == true)
-                    } catch (_: Exception) {
-                        channelError("签收暂未保存，请重试")
+                    if (nearbyPanel.currentSession()?.confirm(item.getString("id")) != true) {
+                        text = "签收未保存 · 重试"
                     }
                 }
             }, 3)
@@ -2771,7 +2760,6 @@ class MainActivity : Activity() {
             channelComposerScope = key
             channelRecipientActor = null
             channelPhoto = null
-            channelWantReceipt.isChecked = false
             channelDraftKey = key
             privateContent.clear()
             channelText.setText(channelDrafts[key].orEmpty())
@@ -2813,7 +2801,6 @@ class MainActivity : Activity() {
                 channelRecipientActor = target
                 channelDraftKey = if (target == null) config.scope else config.scope + "|" + target
                 channelPhoto = null
-                channelWantReceipt.isChecked = false
                 channelText.setText(channelDrafts[channelDraftKey].orEmpty())
                 updateChannelComposer()
             }.setNegativeButton("取消", null).show()
@@ -2879,7 +2866,6 @@ class MainActivity : Activity() {
         channelWrite.text = if (channelText.text.isNullOrBlank() && channelPhoto == null) "写消息" else "继续写消息"
         channelEditor.visibility = if (channelEditorOpen) View.VISIBLE else View.GONE
         channelOptions.visibility = if (channelOptionsOpen) View.VISIBLE else View.GONE
-        channelOptionsButton.text = if (channelWantReceipt.isChecked) "消息选项 · 要求签收" else "消息选项"
         val session = nearbyPanel.currentSession()
         val config = currentNearbyCredential()
         val recipient = config?.recipients?.firstOrNull { it.actor == channelRecipientActor }
@@ -2893,7 +2879,6 @@ class MainActivity : Activity() {
         channelRecipientPicker.isEnabled = config != null
         channelAttach.visibility = if (recipient != null) View.VISIBLE else View.GONE
         channelAttach.text = if (channelPhoto == null) "附照片" else "移除照片"
-        channelWantReceipt.isEnabled = session != null
         channelSend.isEnabled = session != null && (channelRecipientActor == null || recipient != null) &&
             (!channelText.text.isNullOrBlank() || recipient != null && channelPhoto != null)
         val links = NearbyService.diagnostics.value
@@ -2919,17 +2904,15 @@ class MainActivity : Activity() {
         try {
             if (actor == null) {
                 check(photo == null)
-                session.send(message, confirmationRequired = channelWantReceipt.isChecked)
+                session.send(message)
             } else {
                 val config = checkNotNull(currentNearbyCredential())
                 val recipient = config.recipients.first { it.actor == actor }
                 val id = UUID.randomUUID().toString()
                 val envelope = NearbyPrivate.seal(config, recipient, id, message, photo)
-                session.send("", id = id, recipient = actor, sealedPayload = envelope,
-                    confirmationRequired = channelWantReceipt.isChecked)
+                session.send("", id = id, recipient = actor, sealedPayload = envelope)
             }
             channelPhoto = null
-            channelWantReceipt.isChecked = false
             channelText.text.clear()
             saveChannelDraft()
             setChannelEditorOpen(false)
