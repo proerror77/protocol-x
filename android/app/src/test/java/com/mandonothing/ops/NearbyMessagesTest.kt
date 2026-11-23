@@ -71,12 +71,21 @@ class NearbyMessagesTest {
     }
 
     @Test
-    fun channelTextAndPrivateMessagesRequireManualConfirmation() {
-        assertTrue(nearbyRequiresConfirmation("集合点改到三号门", "", hasAudio = false, assistance = false))
-        assertTrue(nearbyRequiresConfirmation("", "YWJj", hasAudio = false, assistance = false))
-        assertFalse(nearbyRequiresConfirmation(" ", "", hasAudio = false, assistance = false))
-        assertFalse(nearbyRequiresConfirmation("语音留言", "", hasAudio = true, assistance = false))
-        assertFalse(nearbyRequiresConfirmation("求助", "", hasAudio = false, assistance = true))
+    fun channelTextAndPrivateMessagesRequestReadReceipts() {
+        assertTrue(nearbyRequestsReadReceipt("集合点改到三号门", "", hasAudio = false, assistance = false))
+        assertTrue(nearbyRequestsReadReceipt("", "YWJj", hasAudio = false, assistance = false))
+        assertFalse(nearbyRequestsReadReceipt(" ", "", hasAudio = false, assistance = false))
+        assertFalse(nearbyRequestsReadReceipt("语音留言", "", hasAudio = true, assistance = false))
+        assertFalse(nearbyRequestsReadReceipt("求助", "", hasAudio = false, assistance = true))
+    }
+
+    @Test
+    fun textMustBeOnScreenToCountAsRead() {
+        assertFalse(channelTextFullyVisible(0, 50, 300))
+        assertFalse(channelTextFullyVisible(30, 50, 300))
+        assertTrue(channelTextFullyVisible(50, 50, 300))
+        assertFalse(channelTextFullyVisible(250, 500, 300))
+        assertTrue(channelTextFullyVisible(300, 500, 300))
     }
 
     @Test
@@ -109,6 +118,11 @@ class NearbyMessagesTest {
         assertFalse(validAcknowledgment(groupMessage, relayReceipt))
         assertTrue(validAcknowledgment(groupMessage, relayReceipt.copy(receiptFor = "",
             confirmationFor = original.id)))
+
+        val delivered = relayReceipt.copy(actor = "recipient")
+        val read = delivered.copy(receiptFor = "", confirmationFor = original.id)
+        assertTrue(collectNearbyReadReceipts(original, listOf(delivered)).isEmpty())
+        assertEquals(listOf(read), collectNearbyReadReceipts(original, listOf(delivered, read, read)))
     }
 
     @Test

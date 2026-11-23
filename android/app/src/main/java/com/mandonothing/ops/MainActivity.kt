@@ -12,6 +12,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -70,6 +71,13 @@ import kotlin.math.max
 class MainActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val nearbyPanel by lazy { NearbyPanel(this, scope) }
+    private val unreadChannelText = mutableMapOf<String, View>()
+    private val pendingReadReceipts = mutableSetOf<String>()
+    private var channelReadCheckScheduled = false
+    private val channelReadCheck = Runnable {
+        channelReadCheckScheduled = false
+        markVisibleChannelTextRead()
+    }
     private lateinit var channelComposer: LinearLayout
     private lateinit var channelWrite: Button
     private lateinit var channelEditor: LinearLayout
@@ -288,7 +296,16 @@ class MainActivity : Activity() {
             setPadding(dp(16), 0, dp(16), dp(4))
         }
         root.addView(radioHeader, LinearLayout.LayoutParams(MATCH, WRAP))
-        scroll = ScrollView(this).apply { isFillViewport = true; clipToPadding = false }
+        scroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+            setOnScrollChangeListener { _, _, _, _, _ -> scheduleVisibleChannelReads(restart = true) }
+            addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) {
+                    scheduleVisibleChannelReads(restart = true)
+                }
+            }
+        }
         content = column().apply { setPadding(dp(16), dp(4), dp(16), dp(16)) }
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(MATCH, 0, 1f))
@@ -495,6 +512,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         visible = false
+        scheduleVisibleChannelReads()
         NearbyService.uiActive = false
         nearbyPanel.pause()
         nearbyObserver?.cancel()
@@ -533,6 +551,7 @@ class MainActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus) voiceService?.stopPress(voiceOwner, cancel = true)
+        scheduleVisibleChannelReads(restart = true)
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -1362,6 +1381,7 @@ class MainActivity : Activity() {
         if (open == Section.VIDEO) connectVideo()
         if (open == Section.MEMBERS) renderMembers()
         if (open == Section.CHANNELS) renderChannelDirectory()
+        scheduleVisibleChannelReads(restart = true)
     }
 
     private fun selectEvent(target: String, keepContext: Boolean = false) {
@@ -2410,6 +2430,7 @@ class MainActivity : Activity() {
         if (!::conversation.isInitialized) return
         updateChannelComposer()
         val followLatest = section == Section.LIVE && !scroll.canScrollVertically(1)
+        unreadChannelText.clear()
         conversation.removeAllViews()
         if (olderBefore != null && client?.bound == true) {
             put(conversation, button("加载更早语音").apply { setOnClickListener { loadOlderVoice() } }, 5)
@@ -2434,7 +2455,7 @@ class MainActivity : Activity() {
             .filter { !it.isPrivate || it.sender == current.sender || current.isPrivateAddressedToMe(it) }
             .toList().takeLast(24).mapNotNull { message ->
                 val privateMessage = if (message.isPrivate) readPrivateMessage(message) ?: return@mapNotNull null else null
-                val confirmations = current.confirmations(message.id)
+                val receipts = current.readReceipts(message.id)
                 JSONObject().put("source", "nearby").put("created_at", Instant.ofEpochMilli(message.time).toString())
                     .put("id", message.id).put("name", message.name).put("mine", message.sender == current.sender)
                     .put("text", privateMessage?.text ?: message.text)
@@ -2443,9 +2464,9 @@ class MainActivity : Activity() {
                     .put("private", message.isPrivate)
                     .put("photo", privateMessage?.photo?.let(java.util.Base64.getEncoder()::encodeToString))
                     .put("needs_receipt", message.confirmationRequired)
-                    .put("confirmed_by_me", confirmations.any { it.actor == current.actor })
-                    .put("confirmed_count", confirmations.size)
-                    .put("confirmed_by", confirmations.map { it.name }.distinct().joinToString("、"))
+                    .put("read_by_me", receipts.any { it.actor == current.actor })
+                    .put("read_count", receipts.size)
+                    .put("read_by", receipts.map { it.name }.distinct().joinToString("、"))
                     .put("route", (if (message.received || message.sender != current.sender)
                         message.deliveredVia else message.attemptedVia)?.name)
             } else emptyList()
@@ -2476,6 +2497,45 @@ class MainActivity : Activity() {
             }
         }
         if (followLatest) scrollToLatestConversation()
+        scheduleVisibleChannelReads()
+    }
+
+    private fun scheduleVisibleChannelReads(restart: Boolean = false) {
+        if (!::scroll.isInitialized) return
+        val eligible = visible && section == Section.LIVE && hasWindowFocus() && unreadChannelText.isNotEmpty()
+        if (restart || !eligible) {
+            scroll.removeCallbacks(channelReadCheck)
+            channelReadCheckScheduled = false
+        }
+        if (eligible && !channelReadCheckScheduled) {
+            channelReadCheckScheduled = scroll.postDelayed(channelReadCheck, CHANNEL_READ_DWELL_MS)
+        }
+    }
+
+    private fun markVisibleChannelTextRead() {
+        if (!visible || section != Section.LIVE || !hasWindowFocus() ||
+            scroll.windowVisibility != View.VISIBLE) return
+        val viewport = Rect()
+        if (!scroll.getGlobalVisibleRect(viewport)) return
+        val visibleBody = Rect()
+        val ids = unreadChannelText.filterValues { body ->
+            body.isShown && body.getGlobalVisibleRect(visibleBody) && visibleBody.intersect(viewport) &&
+                channelTextFullyVisible(visibleBody.height(), body.height, viewport.height())
+        }.keys.toList()
+        saveChannelReadReceipts(ids)
+    }
+
+    private fun saveChannelReadReceipts(ids: List<String>) {
+        val session = nearbyPanel.currentSession() ?: return
+        val fresh = ids.filter { pendingReadReceipts.add(it) }
+        if (fresh.isEmpty()) return
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { fresh.forEach { session.markRead(it) } }
+            } finally {
+                pendingReadReceipts.removeAll(fresh)
+            }
+        }
     }
 
     private fun readPrivateMessage(message: NearbyMessage): NearbyPrivateContent? {
@@ -2514,7 +2574,14 @@ class MainActivity : Activity() {
         }
         val heading = listOfNotNull(name, kind, time, routeLabel).joinToString(" · ")
         bubble.addView(text(heading, 13, routeColor, true))
-        item.optString("text").takeIf { it.isNotBlank() }?.let { put(bubble, text(it, 16, INK), 5) }
+        val id = item.getString("id")
+        val needsRead = !mine && item.optBoolean("needs_receipt") && !item.optBoolean("read_by_me")
+        val messageText = item.optString("text")
+        if (messageText.isNotBlank()) {
+            val body = text(messageText, 16, INK)
+            put(bubble, body, 5)
+            if (needsRead) unreadChannelText[id] = body
+        }
         item.optString("audio").takeIf { it.isNotBlank() }?.let { audio ->
             put(bubble, linkButton("播放语音留言").apply {
                 setOnClickListener { stopReplay(); nearbyPanel.play(audio, pttHint) }
@@ -2531,24 +2598,21 @@ class MainActivity : Activity() {
                             contentDescription = "定向照片"
                         }
                         AlertDialog.Builder(this@MainActivity).setTitle("定向照片").setView(image)
-                            .setPositiveButton("关闭", null).show()
+                            .setPositiveButton("关闭", null).create().apply {
+                                if (needsRead && messageText.isBlank()) {
+                                    setOnShowListener { saveChannelReadReceipts(listOf(id)) }
+                                }
+                                show()
+                            }
                     }
                 }
             }, 5)
         }
-        if (item.optBoolean("needs_receipt")) {
-            val confirmed = item.optString("confirmed_by")
-            val count = item.optInt("confirmed_count")
-            if (mine) put(bubble, text(if (count == 0) "等待签收" else "$count 人已签收 · $confirmed", 12,
+        if (mine && item.optBoolean("needs_receipt")) {
+            val readers = item.optString("read_by")
+            val count = item.optInt("read_count")
+            put(bubble, text(if (count == 0) "未读" else "$count 人已读 · $readers", 12,
                 if (count == 0) ACCENT else ONLINE), 3)
-            else if (item.optBoolean("confirmed_by_me")) put(bubble, text("已签收", 12, ONLINE), 3)
-            else put(bubble, linkButton("签收").apply {
-                setOnClickListener {
-                    if (nearbyPanel.currentSession()?.confirm(item.getString("id")) != true) {
-                        text = "签收未保存 · 重试"
-                    }
-                }
-            }, 3)
         }
         if (mine) {
             val (status, color) = when (item.optString("delivery")) {
@@ -4890,6 +4954,7 @@ class MainActivity : Activity() {
         private const val ARRIVAL_NOTIFICATION_PERMISSION = 22
         private const val WORKSPACE_RECONCILE_MS = 60_000L
         private const val WORKSPACE_RETRY_MS = 10_000L
+        private const val CHANNEL_READ_DWELL_MS = 250L
         private const val NEARBY_PHOTO = 4285
         private const val HELP = "request_assistance"
         private const val VIDEO_IDLE_TEXT = "等待现场画面"
@@ -4911,4 +4976,9 @@ class MainActivity : Activity() {
         private val ON_ACCENT = Color.rgb(38, 24, 18)
         private val RECORD_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
     }
+}
+
+internal fun channelTextFullyVisible(visibleHeight: Int, bodyHeight: Int, viewportHeight: Int): Boolean {
+    val required = minOf(bodyHeight, viewportHeight)
+    return required > 0 && visibleHeight >= required
 }
