@@ -56,6 +56,7 @@ internal data class VoiceSessionState(
     val speaker: VoiceSpeaker? = null,
     val lastHeard: VoiceSpeaker? = null,
     val output: String = "系统默认",
+    val receiveMuted: Boolean = false,
     val localClips: List<VoiceLocalClip> = emptyList(),
 )
 
@@ -240,7 +241,10 @@ class VoiceSessionService : Service() {
                     for (index in 0 until payload.getJSONArray("tasks").length()) {
                         val task = payload.getJSONArray("tasks").getJSONObject(index)
                         val id = task.getJSONObject("ref").getString("id")
-                        workspace.client.markReceived(workspace.eventId, id)
+                        if (id in ids) continue
+                        if (task.optJSONObject("field_response")?.isNull("received_at") != false) {
+                            workspace.client.markReceived(workspace.eventId, id)
+                        }
                         if (ids.add(id)) postFieldAlert(id, "新任务 · " + task.getString("title"), workspace.eventId,
                             taskId = id)
                     }
@@ -327,6 +331,7 @@ class VoiceSessionService : Service() {
             },
         )
         channel = next
+        mutableState.value = mutableState.value.copy(receiveMuted = next.receiveMuted)
         next.connect()
     }
 
@@ -421,6 +426,14 @@ class VoiceSessionService : Service() {
     internal fun audioOutputs(): List<AudioDevice> = channel?.audioOutputs().orEmpty()
     internal fun currentOutput(): AudioDevice? = channel?.currentOutput()
     internal fun selectOutput(device: AudioDevice) { channel?.selectOutput(device) }
+
+    internal fun toggleReceiveMute(owner: Any) {
+        if (uiOwner !== owner) return
+        val listening = channel ?: return
+        listening.setReceiveMuted(!listening.receiveMuted)
+        mutableState.value = mutableState.value.copy(receiveMuted = listening.receiveMuted)
+        mutableState.value.workspace?.target?.id?.let { NearbyService.setReceiveMuted(it, listening.receiveMuted) }
+    }
 
     internal fun leave(message: String = "已退出频道") {
         closeChannel()

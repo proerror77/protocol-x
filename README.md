@@ -7,6 +7,7 @@ Android 客户端、指挥台 API 和频道权限源码都在这个目录。Andr
 1. 每项改动在自己的分支提交，通过审查后汇入 `main`。在发布提交里统一提高构建号。
 2. 从待交付的提交进入 `android/`，运行 `./gradlew :app:testDebugUnitTest :app:assembleDebug`。
 3. 记录 APK 版本、构建号、提交 SHA 和 APK SHA-256。服务端部署和真机验收各自记录。
+4. 在同版本的公开 GitHub Release 上传 `Protocol_X_v<版本>.apk` 和 `protocol-x-android.json`。清单字段为 `version_name`、`version_code`、`bytes`、`sha256`，均来自签名后的 APK。App 从「更多 → 关于 Protocol X」检查更新。
 
 0.27.1 汇合了 0.27.0 的附近通信、频道动态增量更新和 0.26.3 的 PTT 尾音优化。定向私信和照片依赖新版频道公钥接口。
 

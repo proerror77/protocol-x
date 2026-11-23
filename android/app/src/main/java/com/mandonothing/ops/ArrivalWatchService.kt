@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -18,10 +17,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-/** Follows assignments during an explicitly started field shift, independently of PTT. */
+/** Receives the authenticated flight-event stream while the app is active in the background. */
 class ArrivalWatchService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -31,20 +32,15 @@ class ArrivalWatchService : Service() {
         if (running) return START_NOT_STICKY
         val manager = getSystemService(NotificationManager::class.java)
         createChannels(manager)
-        val stop = PendingIntent.getBroadcast(
-            this, 0, Intent(this, ArrivalWatchStopReceiver::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
         val home = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val tracking = Notification.Builder(this, STATUS_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("航班值班提醒已开启")
-            .setContentText("后台跟进本人接待任务的航班动态")
+            .setContentTitle("接机航班通知")
+            .setContentText("接收本人接待任务的航班变化")
             .setContentIntent(home)
-            .addAction(Notification.Action.Builder(null, "结束值班", stop).build())
             .setOngoing(true).setShowWhen(false).build()
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(SERVICE_ID, tracking, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -72,23 +68,23 @@ class ArrivalWatchService : Service() {
     private suspend fun watch(client: OpsClient, manager: NotificationManager) {
         val cursors = getSharedPreferences("arrival_notice_cursor", MODE_PRIVATE)
         var cursor = cursors.getLong(client.localSessionKey, 0)
-        var backoff = POLL_MS
+        var backoff = 2_000L
         while (true) {
             try {
                 if (!canNotify(this)) {
                     stopSelf()
                     return
                 }
-                val payload = client.arrivalNotices(cursor)
-                val items = payload.getJSONArray("items")
-                for (index in 0 until items.length()) {
-                    val item = items.getJSONObject(index)
-                    post(manager, client.origin, item)
-                    cursor = item.getLong("seq")
-                    cursors.edit().putLong(client.localSessionKey, cursor).apply()
+                client.streamArrivalNotices(cursor) { item ->
+                    val next = item.getLong("seq")
+                    if (next > cursor) {
+                        post(manager, client.origin, item)
+                        receivedEvents.tryEmit(client.origin to item.getString("event_id"))
+                        cursor = next
+                        cursors.edit().putLong(client.localSessionKey, cursor).apply()
+                    }
+                    backoff = 2_000
                 }
-                backoff = POLL_MS
-                if (payload.optBoolean("has_more")) continue
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: OpsException) {
@@ -96,11 +92,11 @@ class ArrivalWatchService : Service() {
                     stopSelf()
                     return
                 }
-                backoff = (backoff * 2).coerceAtMost(60_000)
             } catch (_: Exception) {
-                backoff = (backoff * 2).coerceAtMost(60_000)
+                // Resume the event stream after a transient disconnect.
             }
             delay(backoff)
+            backoff = (backoff * 2).coerceAtMost(60_000)
         }
     }
 
@@ -150,12 +146,13 @@ class ArrivalWatchService : Service() {
         private const val ALERT_CHANNEL = "arrival_updates"
         private const val SERVICE_ID = 731
         private const val ALERT_ID = 732
-        private const val POLL_MS = 12_000L
+        private val receivedEvents = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 16)
+        internal val events = receivedEvents.asSharedFlow()
         @Volatile internal var running = false
             private set
 
         internal fun createChannels(manager: NotificationManager) {
-            manager.createNotificationChannel(NotificationChannel(STATUS_CHANNEL, "航班值班", NotificationManager.IMPORTANCE_LOW))
+            manager.createNotificationChannel(NotificationChannel(STATUS_CHANNEL, "航班通知连接", NotificationManager.IMPORTANCE_LOW))
             manager.createNotificationChannel(NotificationChannel(ALERT_CHANNEL, "接机航班动态", NotificationManager.IMPORTANCE_HIGH))
         }
 
@@ -174,12 +171,5 @@ class ArrivalWatchService : Service() {
                 }
             }
         }
-    }
-}
-
-/** Notification action can stop an active watch without relaunching the app. */
-class ArrivalWatchStopReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        ArrivalWatchService.end(context)
     }
 }
