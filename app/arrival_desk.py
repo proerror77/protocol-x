@@ -6,6 +6,7 @@ import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Annotated, Literal
+from uuid import uuid4
 
 from fastapi import Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -17,6 +18,7 @@ from .flights import AIRPORT_TZ, HKG_EVENTS
 from .models import StrictModel
 from .pickup_watch import arrival_time, flight_number
 from .store import dump
+from . import reception_progress, reception_runtime
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 Actor = Annotated[str, StringConstraints(pattern=r"^(demo-staff|person-[a-f0-9]{32})$")]
@@ -32,6 +34,7 @@ HISTORY = {
     "reschedule_pickup": "调度员调整接机时间", "replace_resource": "调度员调整车辆",
     "scenario_approved": "调度员确认接机方案",
     "proposal": "Agent 提出调度建议", "acknowledge": "司机确认接单",
+    "player_missing": "报告未见到球员", "player_found": "球员已找到",
 }
 
 
@@ -82,6 +85,18 @@ class PlanInput(StrictModel):
 class StageInput(StrictModel):
     expected_version: int = Field(ge=1)
     stage: Literal["met", "boarded", "hotel_handoff", "checked_in"]
+    player_ids: list[UUID4] | None = Field(default=None, min_length=1, max_length=12)
+    request_id: UUID4 | None = None
+
+
+class ExceptionInput(StrictModel):
+    expected_version: int = Field(ge=1)
+    player_id: UUID4
+    detail: Name
+
+
+class NoticeReceiptInput(StrictModel):
+    status: Literal["received", "acknowledged"]
 
 
 class PhotoInput(StrictModel):
@@ -176,6 +191,7 @@ class ArrivalDesk:
                 CREATE INDEX IF NOT EXISTS arrival_flight_notices_recorded
                     ON arrival_flight_notices(recorded_at);
             """)
+            reception_runtime.install(conn)
             if conn.postgres:
                 conn.execute("""
                     CREATE OR REPLACE FUNCTION ops_signal_arrival_notice() RETURNS trigger
@@ -202,6 +218,8 @@ class ArrivalDesk:
         fields = ("status", "estimated", "actual", "arrivals_hall", "baggage_belt")
         if previous and all(previous.get(key) == observation.get(key) for key in fields):
             return
+        definition = self.scope(conn, event_id)
+        arrival_event = reception_runtime.record_event(conn, link, observation, definition["arrival_process"])
         when = observation.get("actual") or observation.get("estimated") or observation.get("scheduled")
         detail = " · ".join(filter(None, [link["flight"], when]))
         kind = "delay" if observation["delay_minutes"] else observation["status"]
@@ -209,14 +227,14 @@ class ArrivalDesk:
             detail += f" · 延误 {observation['delay_minutes']} 分钟"
         history(conn, event_id, task_id, kind, "HKIA", detail, observation["source_time"])
         notice = "delay" if kind == "delayed" else kind
-        if notice in FLIGHT_NOTICE_LABELS:
+        if notice == "delay" or (notice in FLIGHT_NOTICE_LABELS and arrival_event):
             conn.execute("""
                 INSERT INTO arrival_flight_notices
                     (event_id,task_id,flight,flight_date,kind,source_at,recorded_at)
                 VALUES (?,?,?,?,?,?,?) ON CONFLICT(event_id,task_id,flight,flight_date,kind) DO NOTHING
             """, (event_id, task_id, link["flight"], link["day"], notice, observation["source_time"], iso_now()))
         plan = json.loads(record["data"])
-        rules = self.scope(conn, event_id)["arrival_rules"]
+        rules = definition["arrival_rules"]
         risk = hotel_risk(plan["hotel"], reception_window(link["day"], observation, rules))
         previous_risk = hotel_risk(plan["hotel"], reception_window(link["day"], previous, rules))
         if risk and (not previous_risk or risk["certain"] != previous_risk["certain"]):
@@ -238,20 +256,30 @@ class ArrivalDesk:
                  "json_extract(p.data,'$.flight')", "json_extract(p.data,'$.flight_date')")
             )
             rows = conn.execute(f"""
-                SELECT n.seq,n.event_id,n.task_id,n.flight,n.kind,n.source_at
-                FROM arrival_flight_notices n
-                JOIN arrival_plans p ON p.event_id=n.event_id AND p.task_id=n.task_id
-                JOIN objects o ON o.event_id=n.event_id AND o.id=n.task_id
-                    AND o.ontology_id='golf.v1' AND o.object_type='TransferLeg'
-                WHERE n.seq>? AND n.recorded_at>=? AND n.flight=({flight}) AND n.flight_date=({day})
-                  AND (({driver})=? OR ({greeter})=?)
-                  AND EXISTS (
-                      SELECT 1 FROM field_members m JOIN field_channels c ON c.id=m.channel_id
-                      WHERE m.person_id=? AND c.event_id=n.event_id AND c.kind='group'
-                  )
-                ORDER BY n.seq LIMIT 51
-            """, (after, cutoff, actor, actor, actor)).fetchall()
-        items = [{**dict(row), "label": FLIGHT_NOTICE_LABELS[row["kind"]]} for row in rows[:50]]
+                WITH visible AS (
+                    SELECT n.seq,n.event_id,n.task_id,n.flight,n.kind,n.source_at,
+                           e.seq AS runtime_event_seq,r.received_at,
+                           ROW_NUMBER() OVER(PARTITION BY e.seq ORDER BY n.seq) AS first_alert
+                    FROM arrival_flight_notices n
+                    JOIN arrival_plans p ON p.event_id=n.event_id AND p.task_id=n.task_id
+                    JOIN objects o ON o.event_id=n.event_id AND o.id=n.task_id
+                        AND o.ontology_id='golf.v1' AND o.object_type='TransferLeg'
+                    LEFT JOIN arrival_runtime_events e ON e.event_id=n.event_id AND e.flight_date=n.flight_date
+                        AND e.flight=n.flight AND n.kind IN ('landed','at_gate')
+                    LEFT JOIN arrival_notice_receipts r ON r.event_seq=e.seq AND r.actor=?
+                    WHERE n.recorded_at>=? AND n.flight=({flight}) AND n.flight_date=({day})
+                      AND (({driver})=? OR ({greeter})=?)
+                      AND EXISTS (
+                          SELECT 1 FROM field_members m JOIN field_channels c ON c.id=m.channel_id
+                          WHERE m.person_id=? AND c.event_id=n.event_id AND c.kind='group'
+                      )
+                )
+                SELECT seq,event_id,task_id,flight,kind,source_at,runtime_event_seq,
+                       (runtime_event_seq IS NULL OR (first_alert=1 AND received_at IS NULL)) AS announce
+                FROM visible WHERE seq>? ORDER BY seq LIMIT 51
+            """, (actor, cutoff, actor, actor, actor, after)).fetchall()
+        items = [{**dict(row), "announce": bool(row["announce"]), "label": FLIGHT_NOTICE_LABELS[row["kind"]]}
+                 for row in rows[:50]]
         return {"items": items, "next_after": items[-1]["seq"] if items else after, "has_more": len(rows) > 50}
 
     def scope(self, conn, event_id):
@@ -328,22 +356,22 @@ class ArrivalDesk:
             task = existing[3] if existing else {}
             if old and existing[1]["synthetic"] != body.synthetic:
                 raise HTTPException(409, "已有接待的资料类型不能变更")
-            if old and any(step["status"] == "done" for step in task["service_facts"]):
+            if old and reception_progress.started(task, "met", 0):
                 previous = existing[1]
                 if (data["players"] != previous["players"] or data["greeter"] != previous["greeter"]
                     or data["flight"] != previous["flight"] or data["flight_date"] != previous["flight_date"]
                     or body.driver != task["assigned_driver"]):
                     raise HTTPException(409, "现场已经确认会合，请保留人员和航班历史")
-                if task["service_facts"][1]["status"] == "done" and (
+                if reception_progress.started(task, "boarded", 1) and (
                     body.vehicle_id != task["vehicle_id"] or data["meeting_point"] != previous["meeting_point"]
                 ):
                     raise HTTPException(409, "已登车，请保留车辆和会合地点记录")
-                if task["service_facts"][2]["status"] == "done" and any(
+                if reception_progress.started(task, "hotel_handoff", 2) and any(
                     data["hotel"][key] != previous["hotel"][key]
                     for key in ("name", "address", "check_in", "check_out")
                 ):
                     raise HTTPException(409, "已完成酒店交接，请保留已交接酒店和住宿日期")
-                if task["service_facts"][3]["status"] == "done" and not body.hotel.confirmed:
+                if reception_progress.started(task, "checked_in", 3) and not body.hotel.confirmed:
                     raise HTTPException(409, "已确认入住，请保留酒店确认")
             if not {body.driver, body.greeter}.issubset({p["actor"] for p in self.people(conn, event_id)}):
                 raise HTTPException(422, "请选择本活动内已登记的工作人员")
@@ -355,6 +383,10 @@ class ArrivalDesk:
                 if (not vehicle or not vehicle["available"] or body.vehicle_id in reserved
                     or vehicle["seats"] < len(body.players)):
                     raise HTTPException(409, "车辆不可用、已被分配或座位不足")
+            if existing and "player_progress" in existing[1]:
+                prior_progress = existing[1]["player_progress"]
+                data["player_progress"] = {str(player.id): prior_progress[str(player.id)] for player in body.players
+                                           if str(player.id) in prior_progress}
             names = "、".join(player.name for player in body.players)
             stages = [{"label": stage["label"], "status": "current" if index == 0 else "pending"}
                       for index, stage in enumerate(definition["arrival_process"]["stages"])]
@@ -398,33 +430,83 @@ class ArrivalDesk:
                         user["actor"], "")
         return {"id": task_id, "version": version}
 
-    @staticmethod
-    def allowed_stage(plan, task, user, stages):
-        step = next((stage for stage, entry in zip(stages, task["service_facts"])
-                     if entry["status"] == "current"), None)
-        if step is None or (step.get("requires_hotel_confirmation") and not plan["hotel"]["confirmed"]):
-            return None
-        responsible = plan["greeter"] if step["responsible"] == "greeter" else task["assigned_driver"]
-        return step["id"] if user["role"] == "dispatcher" or responsible == user["actor"] else None
-
     def confirm(self, event_id, task_id, body, user):
         with self.store.connect(write=True) as conn:
             record, plan, row, task = self.load(conn, event_id, task_id, user)
             stages = self.scope(conn, event_id)["arrival_process"]["stages"]
-            if body.expected_version != record["version"] or self.allowed_stage(plan, task, user, stages) != body.stage:
-                raise HTTPException(409, "请刷新后确认本人负责的当前节点")
-            # Hotel confirmation and physical handoffs are separate facts.
-            progress = task["service_facts"]
-            index, stage = next((index, stage) for index, stage in enumerate(stages) if stage["id"] == body.stage)
+            if body.player_ids is None and len(plan["players"]) != 1:
+                raise HTTPException(422, "请选择实际完成此步骤的球员")
+            selected = sorted(str(value) for value in body.player_ids) if body.player_ids is not None else [plan["players"][0]["id"]]
+            key = "arrival-stage:" + str(body.request_id) if body.request_id else None
+            fingerprint = dump([task_id, body.stage, body.expected_version, selected])
+            if key:
+                previous = conn.execute("""
+                    SELECT actor,fingerprint,data FROM receipts WHERE event_id=? AND idempotency_key=?
+                """, (event_id, key)).fetchone()
+                if previous:
+                    if previous["actor"] != user["actor"] or previous["fingerprint"] != fingerprint:
+                        raise HTTPException(409, "请求编号已用于其他操作")
+                    return json.loads(previous["data"])["result"]
+            progress = reception_progress.records(plan, task, stages)
+            if len(set(selected)) != len(selected) or not set(selected).issubset(progress):
+                raise HTTPException(422, "请选择当前接待卡上的不同球员")
+            if body.expected_version != record["version"] or any(
+                reception_progress.allowed_stage(progress[player_id], stages, plan, task, user) != body.stage
+                for player_id in selected
+            ):
+                raise HTTPException(409, "请刷新后确认本人负责的球员当前节点")
+            stage = next(stage for stage in stages if stage["id"] == body.stage)
             at = iso_now()
-            progress[index].update(status="done", confirmed_at=at)
-            if index + 1 < len(progress):
-                progress[index + 1]["status"] = "current"
+            recovered = set()
+            for player_id in selected:
+                player = progress[player_id]
+                player["steps"][body.stage] = {"confirmed_at": at, "actor": user["actor"]}
+                if body.stage == "met" and player.get("exception", {}).get("status") == "open":
+                    player["exception"].update(status="resolved", resolved_at=at, resolved_by=user["actor"])
+                    recovered.add(player_id)
+            plan["player_progress"] = progress
+            reception_progress.aggregate(task, progress, stages)
             conn.execute("UPDATE objects SET data=?,version=version+1 WHERE event_id=? AND ontology_id=? AND object_type='TransferLeg' AND id=?",
                          (dump(task), event_id, row["ontology_id"], task_id))
-            conn.execute("UPDATE arrival_plans SET version=version+1 WHERE event_id=? AND task_id=?", (event_id, task_id))
-            history(conn, event_id, task_id, body.stage, user["actor"], "", at)
-        return {"version": record["version"] + 1, "stage": body.stage, "confirmed_at": at, "action": stage["action"]}
+            conn.execute("UPDATE arrival_plans SET data=?,version=version+1 WHERE event_id=? AND task_id=?", (dump(plan), event_id, task_id))
+            names = "、".join(player["name"] for player in plan["players"] if player["id"] in selected)
+            history(conn, event_id, task_id, body.stage, user["actor"], names, at)
+            if recovered:
+                history(conn, event_id, task_id, "player_found", user["actor"],
+                        "、".join(player["name"] for player in plan["players"] if player["id"] in recovered), at)
+            result = {"version": record["version"] + 1, "stage": body.stage, "player_ids": selected,
+                      "confirmed_at": at, "action": stage["action"]}
+            if key:
+                receipt = {"id": str(uuid4()), "action_type": stage["action"], "target_ref": ref_of(row),
+                           "status": "committed", "actor": user["actor"], "created_at": at, "idempotency_key": key,
+                           "result": result, "proposal_id": None}
+                conn.execute("INSERT INTO receipts(id,event_id,idempotency_key,fingerprint,actor,data) VALUES (?,?,?,?,?,?)",
+                             (receipt["id"], event_id, key, fingerprint, user["actor"], dump(receipt)))
+            return result
+
+    def flag_player(self, event_id, task_id, body, user):
+        with self.store.connect(write=True) as conn:
+            record, plan, _, task = self.load(conn, event_id, task_id, user)
+            stages = self.scope(conn, event_id)["arrival_process"]["stages"]
+            player_id = str(body.player_id)
+            progress = reception_progress.records(plan, task, stages)
+            if player_id not in progress:
+                raise HTTPException(404, "球员不存在")
+            if body.expected_version != record["version"] or "met" in progress[player_id]["steps"]:
+                raise HTTPException(409, "请刷新并选择尚未会合的球员")
+            current = progress[player_id].get("exception")
+            if current and current["status"] == "open":
+                raise HTTPException(409, "此球员已列入未会合跟进")
+            at = iso_now()
+            note = {"kind": "not_met", "status": "open", "detail": body.detail,
+                    "reported_at": at, "actor": user["actor"]}
+            progress[player_id]["exception"] = note
+            plan["player_progress"] = progress
+            conn.execute("UPDATE arrival_plans SET data=?,version=version+1 WHERE event_id=? AND task_id=?",
+                         (dump(plan), event_id, task_id))
+            name = next(player["name"] for player in plan["players"] if player["id"] == player_id)
+            history(conn, event_id, task_id, "player_missing", user["actor"], name + " · " + body.detail, at)
+            return {"version": record["version"] + 1, "player_id": player_id, "exception": note}
 
     def photo(self, event_id, task_id, player_id, user, upload=None):
         with self.store.connect(write=upload is not None) as conn:
@@ -504,11 +586,15 @@ class ArrivalDesk:
             observation = json.loads(flight_link["observation"]) if flight_link and flight_link["observation"] else None
             window = reception_window(plan["flight_date"], observation, definition["arrival_rules"])
             hotel_deadline = hotel_risk(plan["hotel"], window)
-            cards.append({**plan, "id": task_id, "version": record["version"], "task": item,
+            players = reception_progress.project(plan, task, stages, user)
+            public_plan = {key: value for key, value in plan.items() if key != "player_progress"}
+            cards.append({**public_plan, "id": task_id, "version": record["version"], "task": item,
                           "driver_name": names.get(item["owner"], item["owner"]), "greeter_name": names.get(plan["greeter"], plan["greeter"]),
                           "dispatcher": flight_link["dispatcher_id"] if flight_link else None,
                           "observation": observation, "window": window, "hotel_deadline": hotel_deadline,
-                          "photos": photos, "next_stage": self.allowed_stage(plan, task, user, stages),
+                          "photos": photos, "next_stage": players[0]["next_stage"] if len(players) == 1 else None,
+                          "player_receptions": players,
+                          "arrival_notice": reception_runtime.plan_notice(conn, event_id, plan, task, user, names),
                           "history": [{**entry, "actor": names.get(entry["actor"], entry["actor"]),
                                        "label": labels.get(entry["kind"], "机场更新")}
                                       for entry in sorted(stored, key=lambda entry: datetime.fromisoformat(entry["occurred_at"]),
@@ -564,6 +650,28 @@ def register_arrival_desk(app, identity, desk):
             "Cache-Control": "private, no-store, no-transform",
             "X-Accel-Buffering": "no",
         })
+
+    @app.get("/api/events/{event_id}/arrival-events")
+    def arrival_events(event_id: str, response: Response, after: int = Query(default=0, ge=0, le=9223372036854775807),
+                       user=Depends(identity)):
+        if user["role"] != "dispatcher":
+            raise HTTPException(403, "航班运行事件仅供活动中台读取")
+        response.headers["Cache-Control"] = "private, no-store"
+        with desk.store.connect() as conn:
+            desk.scope(conn, event_id)
+            return reception_runtime.events(conn, event_id, after)
+
+    @app.post("/api/events/{event_id}/arrival-events/{seq}/receipt")
+    def notice_receipt(event_id: str, seq: int, body: NoticeReceiptInput, user=Depends(identity)):
+        if not 1 <= seq <= 9223372036854775807:
+            raise HTTPException(404, "提醒不可见")
+        with desk.store.connect(write=True) as conn:
+            desk.scope(conn, event_id)
+            return reception_runtime.record_receipt(conn, event_id, seq, user, body.status)
+
+    @app.post(prefix + "/player-exceptions")
+    def flag_player(event_id: str, plan_id: UUID4, body: ExceptionInput, user=Depends(identity)):
+        return desk.flag_player(event_id, str(plan_id), body, user)
 
     @app.put(prefix)
     def save(event_id: str, plan_id: UUID4, body: PlanInput, user=Depends(identity)):

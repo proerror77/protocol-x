@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 
+from .reception_progress import started as reception_started
 from .bindings import can_read_task, candidates, event_and_definition, ref_of, resolve, task_rows
 from fastapi import HTTPException
 from .database import connect
@@ -242,7 +243,7 @@ def recommendation(conn, event_id, definitions, incident, user):
                "vehicle": assignment, "meeting_point": meeting, "flight": plan.get("flight"), "flight_state": flight_status,
                "airport_updated_at": observation.get("source_time") if observation else None,
                "recipients": [people.get(a, a) for a in recipients], "version": task["version"],
-               "pickup_scenario": bool(data.get("arrival_managed") and data[binding["progress"]][0]["status"] != "done"),
+               "pickup_scenario": bool(data.get("arrival_managed") and not reception_started(data, "met", 0)),
                "next": hints[incident["kind"]], "dispatchable": bool(recipients)}
     heard_places = set(incident.get("place_mentions", []))
     scheduled_places = place_tags(meeting or "")

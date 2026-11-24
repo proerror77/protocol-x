@@ -78,7 +78,21 @@ class ArrivalWatchService : Service() {
                 client.streamArrivalNotices(cursor) { item ->
                     val next = item.getLong("seq")
                     if (next > cursor) {
-                        post(manager, client.origin, item)
+                        if (item.optBoolean("announce", true)) {
+                            if (!canNotify(this)) {
+                                stopSelf()
+                                throw CancellationException("Notifications disabled")
+                            }
+                            post(manager, client.origin, item)
+                            val runtimeEvent = item.optLong("runtime_event_seq")
+                            if (runtimeEvent > 0) {
+                                try {
+                                    client.arrivalNoticeReceipt(item.getString("event_id"), runtimeEvent, "received")
+                                } catch (error: OpsException) {
+                                    if (error.status != 404) throw error
+                                }
+                            }
+                        }
                         receivedEvents.tryEmit(client.origin to item.getString("event_id"))
                         cursor = next
                         cursors.edit().putLong(client.localSessionKey, cursor).apply()
@@ -125,8 +139,11 @@ class ArrivalWatchService : Service() {
             .setPublicVersion(publicNotice)
             .setContentIntent(target)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .build()
-        manager.notify("arrival-$seq", ALERT_ID, notification)
+        val runtimeEvent = item.optLong("runtime_event_seq")
+        val tag = if (runtimeEvent > 0) "arrival-event-$runtimeEvent" else "arrival-$seq"
+        manager.notify(tag, ALERT_ID, notification)
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {

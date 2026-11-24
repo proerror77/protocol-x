@@ -3,6 +3,7 @@ package com.mandonothing.ops
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -213,7 +214,20 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
         readImage(eventPath(eventId, "arrival-plans/${segment(planId)}/players/${segment(playerId)}/photo"),
             setOf("image/jpeg", "image/png"))
 
-    suspend fun streamArrivalNotices(after: Long, onNotice: (JSONObject) -> Unit) = withContext(Dispatchers.IO) {
+
+    suspend fun arrivalNoticeReceipt(event: String, seq: Long, status: String) =
+        request(eventPath(event, "arrival-events/$seq/receipt"), JSONObject().put("status", status))
+
+    suspend fun confirmPlayerReception(event: String, plan: String, version: Int, player: String, stage: String, key: String) =
+        request(eventPath(event, "arrival-plans/${segment(plan)}/stages"),
+            JSONObject().put("expected_version", version).put("stage", stage)
+                .put("player_ids", JSONArray().put(player)).put("request_id", key))
+
+    suspend fun flagPlayerReception(event: String, plan: String, version: Int, player: String, detail: String) =
+        request(eventPath(event, "arrival-plans/${segment(plan)}/player-exceptions"),
+            JSONObject().put("expected_version", version).put("player_id", player).put("detail", detail))
+
+    suspend fun streamArrivalNotices(after: Long, onNotice: suspend (JSONObject) -> Unit) = withContext(Dispatchers.IO) {
         val http = connection("/api/arrival-flight-notices/stream?after=$after", 15_000).apply {
             readTimeout = 40_000
             useCaches = false

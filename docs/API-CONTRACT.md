@@ -90,3 +90,12 @@ Android 在「更多 → 开启后台航班提醒」开启本班值守，与对�
 ## 频道附近通信
 
 已绑定设备向 `POST /api/field/events/{event_id}/nearby` 提交设备的 P-256 公钥（Base64 编码的 SubjectPublicKeyInfo）。响应包含签发方公钥和该人员当前有权进入的工作群组凭证。凭证有 12 小时离线有效期。Android 将凭证加密保存在本机，打开原频道时自动启用 Wi-Fi Aware 和蓝牙。成员退出、停用或设备被撤销后，下一次授权同步会为剩余成员轮换对应的频道密钥。已断网设备最多使用此前取得的凭证至到期。文字和语音留言使用同一频道的本机记录，任务求助另沿用原有服务端回执。
+
+
+### 接机到港事件与逐球员接待
+
+- `GET /api/events/{event_id}/arrival-events?after=<seq>` 为中台和使用该身份的 Runtime 消费者返回已提交的 `FlightArrived` 事件。每个活动、香港服务日期和实际承运航班只生成一次。版本、来源、机场状态、观测时间和记录时间均在响应中。
+- 手机原到港 SSE 新增 `runtime_event_seq` 和 `announce`。同一人员负责同航班的多个车组时，只有第一条可见到港记录触发系统通知。以后到机位及其他接待卡变化仍能用同一流读取。旧客户端仍可读取原有消息。消息不含球员资料。
+- `POST /api/events/{event_id}/arrival-events/{seq}/receipt` 接受 `status: "received" | "acknowledged"`。本人当前接机或司机身份才能写回。系统通知提交给 Android 后回报接收，人员点击接待卡按钮后确认。中台分别显示两个回执；重复提交保留原时间。
+- `POST /api/events/{event_id}/arrival-plans/{plan_id}/stages` 支持 `player_ids` 和 `request_id`。每位球员按各自当前节点确认，少于全组的操作不推进其他球员。旧单球员卡可省略 `player_ids`，多球员卡必须选择人员。沿用接待卡版本、岗位和住宿确认的校验。
+- `POST /api/events/{event_id}/arrival-plans/{plan_id}/player-exceptions` 用 `{expected_version,player_id,detail}` 报告未会合。之后该球员被确认会合时关闭异常。中台接待卡读取 `player_receptions` 和 `arrival_notice` 显示个人进度和当前值班回执。

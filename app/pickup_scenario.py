@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import Depends, HTTPException
 from pydantic import Field, UUID4
 
+from .reception_progress import started as reception_started
 from .arrival_desk import Name, history, reception_window
 from .bindings import can_read_task, ref_of, task_rows
 from .field import digest
@@ -45,7 +46,7 @@ def pickup_state(conn, desk, event, incident, user, evaluated_at):
     definition = desk.scope(conn, event)
     if ref_of(row) != ref or not can_read_task(row, definition, user):
         raise HTTPException(404, "接机任务不可访问")
-    if task["dispatch_state"] == "declined" or task["service_facts"][0]["status"] == "done":
+    if task["dispatch_state"] == "declined" or reception_started(task, "met", 0):
         raise HTTPException(409, "接机人员已拒单或已完成会合，请刷新任务")
     link = conn.execute("SELECT observation FROM pickup_flight_links WHERE event_id=? AND task_ref=?",
                         (event, dump(ref))).fetchone()
