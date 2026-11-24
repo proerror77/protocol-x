@@ -28,6 +28,9 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
     suspend fun inspectInvite(code: String) = request("/api/field/invitation", JSONObject().put("code", code))
     suspend fun bind(code: String) = request("/api/field/bind", JSONObject().put("code", code))
     suspend fun passkeyStatus() = request("/api/field/passkeys")
+    suspend fun requestEmailCode(email: String) = request("/api/field/email/request", JSONObject().put("email", email))
+    suspend fun verifyEmailCode(id: String, code: String) =
+        request("/api/field/email/verify", JSONObject().put("request_id", id).put("code", code))
     suspend fun passkeyOptions(invite: String?) = if (invite == null)
         request("/api/field/passkeys/login/options", JSONObject())
     else request("/api/field/passkeys/register/options", JSONObject().put("code", invite))
@@ -75,6 +78,9 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
     suspend fun createPerson(eventId: String, person: JSONObject) = request(fieldPath(eventId, "people"), person)
     suspend fun invitePerson(eventId: String, actor: String) =
         request(fieldPath(eventId, "people/${segment(actor)}/invite"), JSONObject())
+    suspend fun approveLoginEmail(eventId: String, actor: String, email: String?) =
+        request(fieldPath(eventId, "people/${segment(actor)}/login-email"),
+            JSONObject().put("email", email ?: JSONObject.NULL))
     suspend fun revokePerson(eventId: String, actor: String) =
         request(fieldPath(eventId, "people/${segment(actor)}/revoke"), JSONObject())
     suspend fun setAccountStatus(eventId: String, actor: String, suspended: Boolean) =
@@ -196,12 +202,15 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
         private set
     var fieldEnabled: Boolean = false
         private set
+    var emailEnrollment: Boolean = false
+        private set
 
     suspend fun bootstrap() = request("/api/bootstrap").also(::applyBootstrap)
 
     fun applyBootstrap(bootstrap: JSONObject) {
         profile = bootstrap.getJSONObject("identity")
         fieldEnabled = bootstrap.optBoolean("field_binding_enabled")
+        emailEnrollment = bootstrap.optBoolean("email_enrollment")
         privateCallsEnabled = bootstrap.optBoolean("private_calls_enabled")
     }
 

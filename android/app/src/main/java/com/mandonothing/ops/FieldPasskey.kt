@@ -30,7 +30,7 @@ internal object FieldPasskey {
         } catch (_: GetCredentialCancellationException) {
             return null
         } catch (_: NoCredentialException) {
-            throw IllegalStateException("本机找不到 Protocol X 的 Passkey，请用原凭据或请调度员发新的登录包")
+            throw IllegalStateException("本机找不到 Protocol X 的 Passkey，请使用保存了该 Passkey 的设备或联系调度员")
         }
         checkNotNull(credential) { "设备没有返回有效的 Passkey" }
         return service.verifyPasskey(challenge.getString("ceremony"), JSONObject(credential), invite)

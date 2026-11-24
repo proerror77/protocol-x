@@ -43,6 +43,31 @@ TAK CoT 接通不等于 LiveKit 语音已进入 ATAK。第一阶段专业人员�
 
 各服务可以在同一试点主机上运行。正式性能预算在真实手机、网络和视频码率测试后确定。
 
+## Android 首次登录验证
+
+为试点配置 Passkey 的 DNS 域名及发布版 Android APK 的签名证书 SHA-256。该域名须通过公网 HTTPS 在 `/.well-known/assetlinks.json` 提供 Ops 返回的应用关联 JSON。登录页继续从 App 已配置的 Ops 入口读取登录方式。Android 设备须运行 Android 9 或更新版本，并有可用的 Passkey 凭据提供方。[Android Credential Manager 配置要求](https://developer.android.com/identity/credential-manager/prerequisites)
+
+把这些环境变量注入 Ops 服务。用试点 Compose 时可放在受限的 `deploy/ptt/pilot.env`，并通过 `--env-file` 加载。使用项目批准的公司邮件发件账号。
+
+```dotenv
+OPS_PASSKEY_RP_ID=ops.example.com
+OPS_PASSKEY_ANDROID_SHA256=<发布版 APK 的签名证书指纹>
+OPS_FIELD_EMAIL_ENROLLMENT=true
+OPS_FIELD_EMAIL_OTP_SECRET=<至少 32 字节的随机密钥>
+OPS_FIELD_SMTP_HOST=smtp.example.com
+OPS_FIELD_SMTP_PORT=465
+OPS_FIELD_SMTP_USERNAME=ops@example.com
+OPS_FIELD_SMTP_PASSWORD=<发件端 SMTP 凭据>
+```
+
+可用 `OPS_FIELD_SMTP_FROM` 指定邮件 From 地址，默认使用 SMTP 用户名。确保 Ops 主机能访问发件端，反向代理只采信可信来源提供的客户端地址。配置错误会阻止服务以邮箱验证模式启动。
+
+调度员可在 Android 的「人员与频道 → 批准登录邮箱」或网页的「接待人员」为名单中的成员保存邮箱。一人一个邮箱，项目范围仍由人员的频道权限决定。邮箱验证码 10 分钟有效，最多可试 5 次。验证码通过后请在 10 分钟内完成 Passkey 登记。完成登记后，同一人后续用 Passkey 登录。需要恢复遗失的 Passkey 时，由调度员核实身份，再停用并恢复该人员的登录权限以允许重新登记。
+
+首次切换会撤销旧登录包、未标记为 Passkey 的既有个人会话，并关闭共享工作人员访问码。已登记的 Passkey 可以重新登录。旧网页个人绑定入口随之停用，调度指挥台的运维凭据仍用于管理和接入，应仅由授权的调度管理员保管。
+
+启用前在隔离环境用发布签名的 Android APK 核对完整链路，包括测试邮箱收到验证码、注册、退出后重登，以及账号停用后无法继续登录。启用后从 App 服务入口读取 `GET /api/field/passkeys`，应返回 `enabled` 和 `email_enrollment` 均为 `true`。
+
 ## 一手参考
 
 - LiveKit 本地运行：https://docs.livekit.io/transport/self-hosting/local/

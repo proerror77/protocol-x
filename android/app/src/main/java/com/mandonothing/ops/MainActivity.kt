@@ -662,30 +662,59 @@ class MainActivity : Activity() {
         val login = card(content)
         login.addView(text(if (legacy) "连接试点服务" else if (advanced) "手动绑定" else "登录", 22, INK, true))
         if (!legacy && !advanced) {
-            put(login, text("首次登录请打开调度员发给你的个人登录包。", 14, MUTED), 8)
-            put(login, button("打开个人登录包", primary = true).apply {
-                setOnClickListener { chooseLoginPackage() }
-            }, 16)
-            val passkey = button("使用 Passkey 登录").apply {
+            val service = OpsClient(DEFAULT_ADDRESS, "", false, "")
+            val hint = text("正在读取登录方式…", 14, MUTED)
+            put(login, hint, 8)
+            val passkey = button("使用 Passkey 登录", primary = true).apply {
                 visibility = View.GONE
                 setOnClickListener { signInWithPasskey() }
             }
+            val email = button("首次登录 · 验证邮箱").apply {
+                visibility = View.GONE
+                setOnClickListener { if (loginJob?.isActive != true) showEmailEnrollment(service) }
+            }
+            val packageButton = button("打开个人登录包").apply {
+                visibility = View.GONE
+                setOnClickListener { chooseLoginPackage() }
+            }
+            val other = linkButton("其他登录方式").apply {
+                visibility = View.GONE
+                setOnClickListener { if (loginJob?.isActive != true) showConnectionForm(advanced = true) }
+            }
+            val retry = linkButton("重新加载登录方式").apply {
+                visibility = View.GONE
+                setOnClickListener { if (loginJob?.isActive != true) showConnectionForm() }
+            }
             put(login, passkey, 8)
-            if (Build.VERSION.SDK_INT >= 28) scope.launch {
+            put(login, email, 8)
+            put(login, packageButton, 8)
+            feedback = liveText()
+            put(login, feedback, 5)
+            put(login, other, 7)
+            put(login, retry, 7)
+            scope.launch {
                 try {
-                    val status = OpsClient(DEFAULT_ADDRESS, "", false, "").passkeyStatus()
-                    if (passkey.isAttachedToWindow && status.optBoolean("enabled")) passkey.visibility = View.VISIBLE
+                    val status = service.passkeyStatus()
+                    if (login.parent !== content) return@launch
+                    val supported = Build.VERSION.SDK_INT >= 28
+                    val emailOnly = status.optBoolean("email_enrollment")
+                    passkey.visibility = if (supported && status.optBoolean("enabled")) View.VISIBLE else View.GONE
+                    if (emailOnly) {
+                        hint.text = if (supported) "首次登录请验证项目批准的邮箱，然后在设备上创建 Passkey。"
+                        else "请使用支持 Passkey 的设备（Android 9 或更新版本）。"
+                        if (supported) email.visibility = View.VISIBLE
+                    } else {
+                        hint.text = "首次登录请打开调度员发给你的个人登录包。"
+                        packageButton.visibility = View.VISIBLE
+                        other.visibility = View.VISIBLE
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
-                    // A login package still carries the server and enrollment instructions.
+                    hint.text = "暂时无法连接项目服务"
+                    retry.visibility = View.VISIBLE
                 }
             }
-            feedback = liveText()
-            put(login, feedback, 5)
-            put(login, linkButton("其他登录方式").apply {
-                setOnClickListener { if (loginJob?.isActive != true) showConnectionForm(advanced = true) }
-            }, 7)
             return
         }
         val address = input("服务器地址", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI).apply {
@@ -785,9 +814,94 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showEmailEnrollment(service: OpsClient) {
+        content.removeAllViews()
+        scroll.scrollTo(0, 0)
+        addHeading("首次登录")
+        val form = card(content)
+        val email = input("项目批准的邮箱", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS).apply {
+            isSingleLine = true
+            filters = arrayOf(InputFilter.LengthFilter(254))
+        }
+        val code = input("8 位邮箱验证码", InputType.TYPE_CLASS_NUMBER).apply {
+            isSingleLine = true
+            filters = arrayOf(InputFilter.LengthFilter(8))
+            visibility = View.GONE
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+        }
+        val send = button("发送验证码")
+        val enroll = button("验证并创建 Passkey", primary = true).apply { visibility = View.GONE }
+        var requestId: String? = null
+        var enrollmentToken: String? = null
+        put(form, email, 0)
+        put(form, send, 8)
+        put(form, code, 8)
+        put(form, enroll, 8)
+        feedback = liveText()
+        put(form, feedback, 5)
+        put(form, linkButton("返回登录").apply {
+            setOnClickListener { if (loginJob?.isActive != true) showConnectionForm() }
+        }, 7)
+        send.setOnClickListener {
+            if (loginJob?.isActive == true) return@setOnClickListener
+            val address = email.text.toString().trim()
+            if (!android.util.Patterns.EMAIL_ADDRESS.matcher(address).matches()) {
+                email.error = "请输入有效的邮箱"
+                return@setOnClickListener
+            }
+            loginJob = scope.launch {
+                send.isEnabled = false
+                email.isEnabled = false
+                feedback.text = "正在请求验证码…"
+                try {
+                    requestId = service.requestEmailCode(address).getString("request_id")
+                    code.text.clear()
+                    code.visibility = View.VISIBLE
+                    enroll.visibility = View.VISIBLE
+                    enroll.text = "验证并创建 Passkey"
+                    send.text = "重新发送验证码"
+                    feedback.text = "如果邮箱已获批准且尚未登记 Passkey，验证码将发到该邮箱。"
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    feedback.text = errorMessage(error)
+                } finally {
+                    send.isEnabled = true
+                    email.isEnabled = requestId == null
+                }
+            }
+        }
+        enroll.setOnClickListener {
+            val id = requestId ?: return@setOnClickListener
+            val otp = code.text.toString()
+            if (enrollmentToken == null && !otp.matches(Regex("[0-9]{8}"))) {
+                code.error = "请输入 8 位验证码"
+                return@setOnClickListener
+            }
+            runFieldLogin(service, "正在登记 Passkey…") {
+                val grant = enrollmentToken ?: service.verifyEmailCode(id, otp).getString("enrollment_token")
+                enrollmentToken = grant
+                code.text.clear()
+                code.visibility = View.GONE
+                send.visibility = View.GONE
+                enroll.text = "创建 Passkey"
+                try {
+                    FieldPasskey.signIn(this, service, grant)
+                } catch (error: OpsException) {
+                    if (error.status == 409) {
+                        enrollmentToken = null
+                        send.visibility = View.VISIBLE
+                        enroll.visibility = View.GONE
+                    }
+                    throw error
+                }
+            }
+        }
+    }
+
     private fun explainAccountSwitch() {
         AlertDialog.Builder(this).setTitle("当前已有登录账号")
-            .setMessage("如需切换人员，请先退出当前账号，再打开登录包。")
+            .setMessage("如需切换人员，请先退出当前账号。")
             .setPositiveButton("知道了", null).show()
     }
 
@@ -886,7 +1000,11 @@ class MainActivity : Activity() {
             try {
                 val restored = OpsClient(record.first, record.second, BuildConfig.DEBUG, "")
                 val cached = fieldOffline.bootstrap(restored)
-                if (cached != null && client == null && fieldNotice?.action != ArrivalWatchService.OPEN_ARRIVAL) {
+                val passkeyExpires = cached?.optString("passkey_session_expires_at")?.let {
+                    runCatching { Instant.parse(it) }.getOrNull()
+                }
+                if (cached != null && passkeyExpires?.isAfter(Instant.now()) == true && client == null &&
+                    fieldNotice?.action != ArrivalWatchService.OPEN_ARRIVAL) {
                     restored.applyBootstrap(cached)
                     enterWorkspace(restored, cached, "", cachedOnly = true)
                 } else {
@@ -3702,14 +3820,18 @@ class MainActivity : Activity() {
     }
 
     private fun showFieldManagement() {
+        val emailEnrollment = client?.emailEnrollment == true
+        val enrollmentAction = if (emailEnrollment) "批准登录邮箱" else "发登录包"
         AlertDialog.Builder(this).setTitle("人员与频道")
-            .setItems(arrayOf("登录名单", "批量导入人员", "添加人员", "发登录包", "撤销设备", "新建频道", "把人员加入频道")) { _, index ->
+            .setItems(arrayOf("登录名单", "批量导入人员", "添加人员", enrollmentAction, "撤销设备", "新建频道", "把人员加入频道")) { _, index ->
                 when (index) {
                     0 -> showLoginRoster()
                     1 -> showRosterImport()
                     2 -> showCreatePerson()
-                    3 -> choosePerson("发登录包", activeOnly = true) { person ->
-                        fieldCall { active, event -> showLoginPackage(active, active.invitePerson(event, person.getString("actor")), person.getString("name")) }
+                    3 -> choosePerson(enrollmentAction, activeOnly = true) { person ->
+                        if (emailEnrollment) showLoginEmail(person) else fieldCall { active, event ->
+                            showLoginPackage(active, active.invitePerson(event, person.getString("actor")), person.getString("name"))
+                        }
                     }
                     4 -> choosePerson("撤销人员设备") { person ->
                         AlertDialog.Builder(this).setTitle("撤销 " + person.getString("name") + " 的设备授权？")
@@ -3750,9 +3872,13 @@ class MainActivity : Activity() {
             pickPeople("登录名单", roster, ::rosterLabel) { person ->
                 val name = person.getString("name")
                 val suspended = person.optString("login_status") == "suspended"
+                val detail = if (active.emailEnrollment) {
+                    if (suspended) "恢复后可使用批准的邮箱重新登记 Passkey。" else "此人的设备、邮箱验证和 Passkey 将失效。"
+                } else if (suspended) "恢复后可以为本人发新的登录包。" else "此人现有设备、登录包及 Passkey 将失效。"
                 AlertDialog.Builder(this).setTitle(if (suspended) "恢复 $name 登录？" else "停用 $name 登录？")
-                    .setMessage(if (suspended) "恢复后可以为本人发新的登录包。" else "此人现有设备、登录包及 Passkey 将失效。")
+                    .setMessage(detail)
                     .setNegativeButton("取消", null)
+                    .apply { if (active.emailEnrollment) setNeutralButton("登录邮箱") { _, _ -> showLoginEmail(person) } }
                     .setPositiveButton(if (suspended) "恢复" else "停用") { _, _ ->
                         fieldCall { service, current ->
                             service.setAccountStatus(current, person.getString("actor"), !suspended)
@@ -3764,6 +3890,44 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showLoginEmail(person: JSONObject) {
+        val panel = column().apply { setPadding(dp(18), dp(8), dp(18), 0) }
+        val email = input("登录邮箱", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS).apply {
+            isSingleLine = true
+            filters = arrayOf(InputFilter.LengthFilter(254))
+            if (!person.isNull("login_email")) setText(person.getString("login_email"))
+        }
+        put(panel, email, 4)
+        AlertDialog.Builder(this).setTitle("批准 ${person.getString("name")} 的登录邮箱")
+            .setView(panel)
+            .setNegativeButton("取消", null)
+            .apply {
+                if (!person.isNull("login_email")) setNeutralButton("撤销邮箱批准") { _, _ ->
+                    saveLoginEmail(person, null)
+                }
+            }
+            .setPositiveButton("批准", null).create().apply {
+                show()
+                getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val address = email.text.toString().trim()
+                    if (!android.util.Patterns.EMAIL_ADDRESS.matcher(address).matches()) {
+                        email.error = "请输入有效的邮箱"
+                        return@setOnClickListener
+                    }
+                    dismiss()
+                    saveLoginEmail(person, address)
+                }
+            }
+    }
+
+    private fun saveLoginEmail(person: JSONObject, email: String?) {
+        fieldCall { active, event ->
+            active.approveLoginEmail(event, person.getString("actor"), email)
+            refresh(automatic = true)
+            showConnectionStatus(if (email == null) "已撤销登录邮箱批准" else "已批准登录邮箱")
+        }
+    }
+
     private fun rosterLabel(person: JSONObject): String {
         val state = when {
             person.optString("login_status") == "suspended" -> "已停用"
@@ -3771,7 +3935,10 @@ class MainActivity : Activity() {
             else -> "待登记 Passkey"
         }
         val roleLabel = if (person.optString("role") == "dispatcher") "调度员" else "工作人员"
-        return person.getString("name") + " · " + person.getString("callsign") + "\n" + roleLabel + " · " + state
+        val email = if (person.has("login_email")) {
+            "\n" + if (person.isNull("login_email")) "待批准登录邮箱" else person.getString("login_email")
+        } else ""
+        return person.getString("name") + " · " + person.getString("callsign") + "\n" + roleLabel + " · " + state + email
     }
 
     private fun pickPeople(title: String, candidates: List<JSONObject>, label: (JSONObject) -> String, choice: (JSONObject) -> Unit) {
@@ -3883,21 +4050,28 @@ class MainActivity : Activity() {
     }
 
     private fun showCreatePerson() = chooseGroup("为新人选择频道") { group ->
+        val emailEnrollment = client?.emailEnrollment == true
         val form = column().apply { setPadding(dp(18), dp(8), dp(18), 0) }
         val name = input("姓名", InputType.TYPE_CLASS_TEXT)
         val handle = input("呼号", InputType.TYPE_CLASS_TEXT)
+        val email = input("登录邮箱（可稍后批准）", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         val roles = dropdown(listOf("工作人员", "调度员"))
         put(form, name, 5)
         put(form, handle, 5)
+        if (emailEnrollment) put(form, email, 5)
         put(form, roles, 5)
         AlertDialog.Builder(this).setTitle("添加人员").setView(form)
             .setNegativeButton("取消", null)
-            .setPositiveButton("生成登录包") { _, _ ->
+            .setPositiveButton(if (emailEnrollment) "添加" else "生成登录包") { _, _ ->
                 fieldCall { active, event ->
                     val body = JSONObject().put("name", name.text.toString()).put("callsign", handle.text.toString())
                         .put("role", if (roles.selectedItemPosition == 1) "dispatcher" else "staff")
                         .put("channel_ids", JSONArray().put(group.getString("id")))
-                    showLoginPackage(active, active.createPerson(event, body), name.text.toString().trim())
+                    val address = email.text.toString().trim()
+                    if (emailEnrollment && address.isNotEmpty()) body.put("login_email", address)
+                    val result = active.createPerson(event, body)
+                    if (emailEnrollment) showConnectionStatus("已添加人员")
+                    else showLoginPackage(active, result, name.text.toString().trim())
                     refresh(automatic = true)
                 }
             }.show()

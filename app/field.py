@@ -1,11 +1,12 @@
 """Personal sessions and activity-scoped membership for the field client."""
 import hashlib
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import Field, field_validator
 
@@ -33,6 +34,21 @@ def clean(value):
     return value
 
 
+EMAIL = re.compile(
+    r"[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+)
+
+
+def normalize_email(value):
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if len(value) > 254 or len(value.split("@", 1)[0]) > 64 or not EMAIL.fullmatch(value):
+        raise ValueError("请输入有效的邮箱地址")
+    return value
+
+
 class ChannelInput(StrictModel):
     name: str = Field(min_length=1, max_length=40)
     _clean = field_validator("name")(clean)
@@ -47,6 +63,8 @@ class RosterPerson(StrictModel):
 class PersonInput(RosterPerson):
     role: Literal["staff", "dispatcher"] = "staff"
     channel_ids: list[str] = Field(min_length=1, max_length=16)
+    login_email: str | None = Field(default=None, max_length=254)
+    _email = field_validator("login_email")(normalize_email)
 
 
 class RosterImport(StrictModel):
@@ -77,16 +95,20 @@ class DirectInput(StrictModel):
 
 
 class Field:
-    def __init__(self, store, definitions, enabled):
+    def __init__(self, store, definitions, enabled, email_enrollment=False):
         self.store = store
         self.definitions = definitions
         self.enabled = enabled
+        self.email_enrollment = email_enrollment
         if not enabled:
             return
         with store.connect(write=True) as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS field_people (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, callsign TEXT NOT NULL, role TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS field_login_emails (
+                    person_id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE
                 );
                 CREATE TABLE IF NOT EXISTS field_suspensions (
                     person_id TEXT PRIMARY KEY, suspended_at TEXT NOT NULL, suspended_by TEXT NOT NULL
@@ -149,6 +171,8 @@ class Field:
                 CREATE INDEX IF NOT EXISTS field_radio_devices
                     ON field_radio_sessions(device_hash, removed_at);
             """)
+            if conn.execute("INSERT OR IGNORE INTO field_access_migrations VALUES ('device-auth-method-v1')").rowcount:
+                conn.execute("ALTER TABLE field_devices ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'invite'")
             if conn.execute("INSERT OR IGNORE INTO field_access_migrations VALUES ('channel-access-v1')").rowcount:
                 conn.execute("""INSERT INTO field_team_members
                     SELECT m.channel_id,m.person_id FROM field_members m JOIN field_channels c ON c.id=m.channel_id
@@ -212,10 +236,11 @@ class Field:
         row = conn.execute("""
             SELECT p.* FROM field_devices d JOIN field_people p ON p.id=d.person_id
             WHERE d.token_hash=? AND d.revoked_at IS NULL AND d.expires_at>?
+            AND (NOT ? OR d.auth_method='passkey')
             AND NOT EXISTS (SELECT 1 FROM field_suspensions s WHERE s.person_id=p.id)
-            """, (key, stamp())).fetchone()
+            """, (key, stamp(), self.email_enrollment)).fetchone()
         if row is None:
-            raise HTTPException(401, "设备绑定已失效，请重新绑定")
+            raise HTTPException(401, "请使用 Passkey 重新登录" if self.email_enrollment else "设备绑定已失效，请重新绑定")
         return {**self.person(row), "device": key}
 
     @staticmethod
@@ -228,6 +253,32 @@ class Field:
         self.require_enabled()
         if user["role"] != "dispatcher":
             raise HTTPException(403, "仅调度员可管理人员或频道")
+
+    def require_account_manager(self, conn, event_id, person_id, user):
+        self.require_dispatcher(user)
+        if not self.event_access(conn, event_id, person_id):
+            raise HTTPException(404, "此人员不属于当前活动")
+        if "device" in user:
+            groups = conn.execute("""
+                SELECT DISTINCT c.event_id FROM field_members m JOIN field_channels c ON c.id=m.channel_id
+                WHERE m.person_id=? AND c.kind='group'
+                """, (person_id,)).fetchall()
+            if any(not self.event_access(conn, row["event_id"], user["actor"]) for row in groups):
+                raise HTTPException(403, "跨活动人员须由有权管理所有相关活动的调度员处理")
+
+    @staticmethod
+    def set_login_email(conn, person_id, email):
+        existing = conn.execute("SELECT email FROM field_login_emails WHERE person_id=?", (person_id,)).fetchone()
+        if (existing["email"] if existing else None) == email:
+            return
+        if email is None:
+            conn.execute("DELETE FROM field_login_emails WHERE person_id=?", (person_id,))
+        else:
+            if conn.execute("SELECT 1 FROM field_login_emails WHERE email=?", (email,)).fetchone():
+                raise HTTPException(409, "该邮箱已经批准给其他人员")
+            conn.execute("""INSERT INTO field_login_emails(person_id,email) VALUES (?,?)
+                         ON CONFLICT(person_id) DO UPDATE SET email=excluded.email""", (person_id, email))
+        conn.execute("DELETE FROM field_email_codes WHERE person_id=?", (person_id,))
 
     @staticmethod
     def event_access(conn, event_id, person_id):
@@ -254,6 +305,7 @@ class Field:
 
     def available_invite(self, conn, code):
         self.require_enabled()
+        self.require_invite_login()
         row = conn.execute("""
             SELECT p.* FROM field_invites i JOIN field_people p ON p.id=i.person_id
             WHERE i.token_hash=? AND i.used_at IS NULL AND i.expires_at>?
@@ -263,12 +315,17 @@ class Field:
             raise HTTPException(404, "登录包已使用、失效或撤销，请联系调度员")
         return row
 
-    def issue_session(self, conn, row):
+    def require_invite_login(self):
+        if self.email_enrollment:
+            raise HTTPException(409, "首次登录请验证已批准的邮箱并创建 Passkey")
+
+    def issue_session(self, conn, row, *, auth_method):
         at = stamp()
         conn.execute("UPDATE field_devices SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL",
                      (at, row["id"]))
         token = "pxd-" + secrets.token_urlsafe(32)
-        conn.execute("INSERT INTO field_devices VALUES (?,?,?,NULL)", (digest(token), row["id"], expiry(7*24*60)))
+        conn.execute("""INSERT INTO field_devices(token_hash,person_id,expires_at,auth_method)
+                        VALUES (?,?,?,?)""", (digest(token), row["id"], expiry(7*24*60), auth_method))
         return JSONResponse({"session_token": token, "identity": self.person(row)}, headers={"Cache-Control": "no-store"})
 
     @staticmethod
@@ -305,18 +362,20 @@ class Field:
         store = self.store
 
         @app.get("/api/field/events/{event_id}/directory")
-        def directory(event_id: str, user=Depends(identity)):
+        def directory(event_id: str, response: Response, user=Depends(identity)):
             self.require_enabled()
             self.require_event(event_id, user)
+            if self.email_enrollment:
+                response.headers["Cache-Control"] = "private, no-store"
             if user["role"] != "dispatcher":
                 self.require_person(user)
             with store.connect() as conn:
                 event_and_definition(conn, event_id, self.definitions)
                 people = conn.execute("""
-                    SELECT DISTINCT p.*,
+                    SELECT DISTINCT p.*, e.email AS login_email,
                         EXISTS (SELECT 1 FROM field_suspensions s WHERE s.person_id=p.id) AS suspended,
                         EXISTS (SELECT 1 FROM field_passkeys k WHERE k.person_id=p.id) AS passkey_registered
-                    FROM field_people p WHERE EXISTS (
+                    FROM field_people p LEFT JOIN field_login_emails e ON e.person_id=p.id WHERE EXISTS (
                         SELECT 1 FROM field_members m JOIN field_channels c ON c.id=m.channel_id
                         WHERE m.person_id=p.id AND c.event_id=? AND c.kind='group'
                     ) OR (? AND EXISTS (
@@ -329,7 +388,8 @@ class Field:
                     """, (event_id, user["actor"], user["role"] == "dispatcher" and "device" not in user)).fetchall()
                 return {"people": [{**self.person(row), **(
                             {"login_status": "suspended" if row["suspended"] else "active",
-                             "passkey_registered": bool(row["passkey_registered"])}
+                             "passkey_registered": bool(row["passkey_registered"]),
+                             **({"login_email": row["login_email"]} if self.email_enrollment else {})}
                             if user["role"] == "dispatcher" else {})} for row in people],
                         "channels": [self.channel_info(conn, row, user["actor"]) for row in channels],
                         "private_calls_enabled": bool(getattr(app.state, "field_conferences_enabled", False))}
@@ -377,10 +437,15 @@ class Field:
                         self.authorized_channel(conn, event_id, channel, user["actor"])
                 person_id = "person-" + uuid4().hex
                 conn.execute("INSERT INTO field_people VALUES (?,?,?,?)", (person_id, body.name, body.callsign, body.role))
+                if body.login_email is not None:
+                    if not self.email_enrollment:
+                        raise HTTPException(409, "服务尚未启用邮箱验证")
+                    self.set_login_email(conn, person_id, body.login_email)
                 for channel in set(body.channel_ids):
                     self.assign_direct(conn, channel, person_id)
                 self.refresh_access(conn, event_id)
-                return JSONResponse({**self.invitation(conn, person_id), "actor": person_id},
+                enrollment = {} if self.email_enrollment else self.invitation(conn, person_id)
+                return JSONResponse({**enrollment, "actor": person_id},
                                     status_code=201, headers={"Cache-Control": "no-store"})
 
         @app.post("/api/field/events/{event_id}/people/import")
@@ -485,6 +550,7 @@ class Field:
         @app.post("/api/field/events/{event_id}/people/{person_id}/invite")
         def invite_person(event_id: str, person_id: str, user=Depends(identity)):
             self.require_dispatcher(user)
+            self.require_invite_login()
             self.require_event(event_id, user)
             with store.connect(write=True) as conn:
                 if not self.event_access(conn, event_id, person_id):
@@ -509,21 +575,15 @@ class Field:
             if person_id == user["actor"]:
                 raise HTTPException(409, "请由另一名调度员维护你的登录权限")
             with store.connect(write=True) as conn:
-                if not self.event_access(conn, event_id, person_id):
-                    raise HTTPException(404, "此人员不属于当前活动")
-                if "device" in user:
-                    groups = conn.execute("""
-                        SELECT DISTINCT c.event_id FROM field_members m JOIN field_channels c ON c.id=m.channel_id
-                        WHERE m.person_id=? AND c.kind='group'
-                        """, (person_id,)).fetchall()
-                    if any(not self.event_access(conn, row["event_id"], user["actor"]) for row in groups):
-                        raise HTTPException(403, "跨活动人员须由有权管理所有相关活动的调度员处理")
+                self.require_account_manager(conn, event_id, person_id, user)
                 if body.suspended:
                     at = stamp()
                     conn.execute("INSERT OR IGNORE INTO field_suspensions VALUES (?,?,?)", (person_id, at, user["actor"]))
                     conn.execute("UPDATE field_invites SET used_at=? WHERE person_id=? AND used_at IS NULL", (at, person_id))
                     conn.execute("UPDATE field_devices SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL", (at, person_id))
                     conn.execute("DELETE FROM field_passkeys WHERE person_id=?", (person_id,))
+                    if self.email_enrollment:
+                        conn.execute("DELETE FROM field_email_codes WHERE person_id=?", (person_id,))
                 else:
                     conn.execute("DELETE FROM field_suspensions WHERE person_id=?", (person_id,))
             return {"login_status": "suspended" if body.suspended else "active"}
@@ -547,7 +607,7 @@ class Field:
             with store.connect(write=True) as conn:
                 row = self.available_invite(conn, body.code)
                 conn.execute("UPDATE field_invites SET used_at=? WHERE token_hash=?", (stamp(), digest(body.code)))
-                return self.issue_session(conn, row)
+                return self.issue_session(conn, row, auth_method="invite")
 
         @app.post("/api/field/logout")
         def logout(user=Depends(identity)):
