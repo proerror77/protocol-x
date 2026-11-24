@@ -1,8 +1,8 @@
 {
   "ontology_id": "golf.v1",
   "label": "高尔夫服务 Ontology",
-  "schema_version": "1.3.0",
-  "binding_version": "1.3.0",
+  "schema_version": "1.4.0",
+  "binding_version": "1.4.0",
   "arrival_process": {
     "id": "player_reception",
     "stages": [
@@ -16,7 +16,16 @@
       {"id":"ConfirmHotelReservation","responsible":"dispatcher"},
       {"id":"UpdatePlayerPhoto","responsible":"dispatcher"},
       {"id":"ReschedulePickup","responsible":"dispatcher","requires_agent_proposal":true},
-      {"id":"AssignVehicle","responsible":"dispatcher"}
+      {"id":"AssignVehicle","responsible":"dispatcher"},
+      {"id":"AcknowledgeArrivalNotice","responsible":"assigned_staff"},
+      {"id":"FlagReceptionException","responsible":"assigned_staff"}
+    ],
+    "interfaces": [
+      {"id":"ArrivalWatch","status_source":"HKIA","binding":"pickup_flight_links"},
+      {"id":"ReceptionWorkItem","binding":"TransferLeg","player_progress":"PlayerReception"}
+    ],
+    "events": [
+      {"id":"FlightArrived","source":"HKIA","binding":"arrival_runtime_events","version":1}
     ],
     "queries": [
       {"id":"ReadArrivalFlightStatus","source":"HKIA","binding":"GET /api/events/{event_id}/flight-arrivals/{flight}"},
@@ -27,6 +36,7 @@
       {"id":"OpenUberRide","source":"Uber","binding":"travel_links.uber","confirmation":"rider_in_uber"}
     ],
     "automations": [
+      {"id":"NotifyFlightArrival","states":["landed","at_gate"],"event":"FlightArrived","effect":"Notify current greeter and driver and show receipts in the dispatch desk"},
       {"id":"TrackArrival","trigger":"HKIA scheduled, estimated, delayed, landed, at_gate, cancelled","effect":"Track flight and notify assigned team"},
       {"id":"EstimateMeetingWindow","trigger":"HKIA arrival time","effect":"Project earliest and latest airport meeting time"},
       {"id":"FlagHotelLateArrival","trigger":"Projected hotel arrival crosses confirmed cutoff","effect":"Notify dispatcher to confirm room hold"},
@@ -37,6 +47,8 @@
   "relationships": [
     {"id":"reception_for","from":"ArrivalPlan","to":"TransferLeg","cardinality":"1","binding":"arrival_plans.task_id"},
     {"id":"receives_players","from":"ArrivalPlan","to":"Player","cardinality":"1..12","binding":"arrival_plans.players"},
+    {"id":"player_progress","from":"ArrivalPlan","to":"PlayerReception","cardinality":"1..12","binding":"arrival_plans.player_progress"},
+    {"id":"confirmed_arrival","from":"ArrivalFlight","to":"FlightArrived","cardinality":"0..1 per activity","binding":"arrival_runtime_events"},
     {"id":"stays_at","from":"ArrivalPlan","to":"HotelStay","cardinality":"1","binding":"arrival_plans.hotel"},
     {"id":"greeted_by","from":"ArrivalPlan","to":"Greeter","cardinality":"1","binding":"arrival_plans.greeter"},
     {"id":"identified_by","from":"Player","to":"PlayerPhoto","cardinality":"0..1","binding":"arrival_photos.player_id"},

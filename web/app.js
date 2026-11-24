@@ -1,5 +1,5 @@
 import { createFlightBoard, hasHongKongArrivals } from './flights.js?v=reception-1';
-import { createArrivalDesk } from './arrival-desk.js?v=travel-actions-1';
+import { createArrivalDesk } from './arrival-desk.js?v=reception-runtime-1';
 import { createPickupDesk } from './pickup.js?v=reception-1';
 import { focusTakLocation, mapEnabled, taskLocations, updateLive } from './live.js?v=flights-map-1';
 

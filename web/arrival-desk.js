@@ -6,7 +6,9 @@ const flightLabels = {
   scheduled: '计划到达', estimated: '预计到达', delayed: '机场通报延误', landed: '已落地',
   at_gate: '已到达机位', cancelled: '已取消', other: '请核对机场看板',
 };
-const stages = { met: '机场会合', boarded: '确认登车', hotel_handoff: '酒店交接', checked_in: '确认入住' };
+const stages = { met: '机场会合', boarded: '登车', hotel_handoff: '酒店交接', checked_in: '入住' };
+const playerStates = { waiting_meet: '待会合', met: '已会合', boarded: '已登车', hotel_handoff: '已交接', checked_in: '已入住' };
+const noticeRoles = { greeter: '接机员', driver: '司机' };
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -251,23 +253,73 @@ export function createArrivalDesk({ api, getPhoto, context, refresh, openTask, c
     if (state.role === 'dispatcher') controls.append(button('编辑安排', () => edit(state, card)));
     const accept = card.task.allowed_actions.find(({ id }) => id === 'acknowledge');
     if (accept) controls.append(button(accept.label, () => confirmTask(card.task, accept)));
-    if (card.next_stage) {
-      const confirm = button(`记录${stages[card.next_stage]}`, async () => {
-        if (!window.confirm(`确认现场已完成“${stages[card.next_stage]}”？`)) return;
-        confirm.disabled = true;
-        error.textContent = '';
-        try {
-          await api(`${path(state.eventId, card.id)}/stages`, {
-            method: 'POST', body: JSON.stringify({ expected_version: card.version, stage: card.next_stage }),
-          });
-          await refresh();
-        } catch (err) {
-          error.textContent = err.message;
-          confirm.disabled = false;
-        }
-      }, true);
-      controls.append(confirm);
+    if (card.arrival_notice) {
+      const notices = node('ul', null, 'arrival-receipts');
+      notices.setAttribute('aria-label', '到港通知回执');
+      for (const recipient of card.arrival_notice.recipients) {
+        const status = recipient.acknowledged_at ? `已确认 ${hkt(recipient.acknowledged_at)}`
+          : recipient.received_at ? '已到终端 · 待确认' : '待终端接收';
+        notices.append(node('li', `${recipient.roles.map((role) => noticeRoles[role]).join('/')} ${recipient.name} · ${status}`));
+      }
+      article.append(notices);
+      if (state.role !== 'dispatcher' && card.arrival_notice.recipients.some(({ acknowledged_at }) => !acknowledged_at)) {
+        controls.append(button('确认收到到港通知', async (event) => {
+          const target = event.currentTarget;
+          target.disabled = true;
+          try {
+            await api(`/api/events/${encodeURIComponent(state.eventId)}/arrival-events/${card.arrival_notice.event_seq}/receipt`,
+              { method: 'POST', body: JSON.stringify({ status: 'acknowledged' }) });
+            await refresh();
+          } catch (err) {
+            error.textContent = err.message;
+            target.disabled = false;
+          }
+        }));
+      }
     }
+    const playerProgress = node('ul', null, 'arrival-player-progress');
+    playerProgress.setAttribute('aria-label', '球员接待进度');
+    const players = card.player_receptions || card.players.map((player) => ({
+      ...player, next_stage: card.players.length === 1 ? card.next_stage : null,
+    }));
+    const pending = async (event, endpoint, fields) => {
+      const target = event.currentTarget;
+      target.disabled = true;
+      error.textContent = '';
+      try {
+        await api(`${path(state.eventId, card.id)}/${endpoint}`, {
+          method: 'POST', body: JSON.stringify({ expected_version: card.version, ...fields }),
+        });
+        await refresh();
+      } catch (err) {
+        error.textContent = err.message;
+        target.disabled = false;
+      }
+    };
+    for (const player of players) {
+      const row = node('li', null, 'arrival-player-row');
+      const missing = player.exception?.status === 'open';
+      row.append(node('strong', player.name), node('span', missing ? `未见到 · ${player.exception.detail}` : playerStates[player.state] || '待同步',
+        missing ? 'arrival-warning' : null));
+      if (player.next_stage) {
+        const step = stages[player.next_stage];
+        row.append(button(`确认${step}`, (event) => {
+          if (window.confirm(`确认 ${player.name} 已完成${step}？`)) {
+            // Single-player legacy servers may not understand the player selector.
+            const fields = card.player_receptions ? { player_ids: [player.id], request_id: crypto.randomUUID() } : {};
+            pending(event, 'stages', { stage: player.next_stage, ...fields });
+          }
+        }));
+      }
+      if (player.state === 'waiting_meet' && !missing && (state.role === 'dispatcher' || player.next_stage === 'met')) {
+        row.append(button('报告未见到', (event) => {
+          const detail = window.prompt(`请填写 ${player.name} 的现场情况`, '未在约定会合点见到球员');
+          if (detail?.trim()) pending(event, 'player-exceptions', { player_id: player.id, detail: detail.trim() });
+        }));
+      }
+      playerProgress.append(row);
+    }
+    article.append(playerProgress);
     article.append(controls, error);
 
     const history = node('details', null, 'arrival-history');

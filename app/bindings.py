@@ -67,7 +67,8 @@ def allowed_actions(row, definition, identity):
             index = current_progress(progress)
             if index is not None:
                 actions.append({"id": "confirm_progress", "label": f"确认{progress[index]['label']}", "progress_index": index})
-    in_transfer = data.get("arrival_managed") and data[binding["progress"]][1]["status"] == "done"
+    in_transfer = data.get("arrival_managed") and (
+        "boarded" in data.get("arrival_started_stages", ()) or data[binding["progress"]][1]["status"] == "done")
     if identity["role"] == "dispatcher" and not in_transfer:
         actions.append({"id": "replace_resource", "label": binding["replace_label"]})
         if binding.get("pickup_time"):
