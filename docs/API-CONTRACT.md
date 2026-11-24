@@ -90,3 +90,12 @@ Android 在「更多 → 开启后台航班提醒」开启本班值守，与对�
 ## 频道附近通信
 
 已绑定设备向 `POST /api/field/events/{event_id}/nearby` 提交设备的 P-256 公钥（Base64 编码的 SubjectPublicKeyInfo）。响应包含签发方公钥和该人员当前有权进入的工作群组凭证。凭证有 12 小时离线有效期。Android 将凭证加密保存在本机，打开原频道时自动启用 Wi-Fi Aware 和蓝牙。成员退出、停用或设备被撤销后，下一次授权同步会为剩余成员轮换对应的频道密钥。已断网设备最多使用此前取得的凭证至到期。文字和语音留言使用同一频道的本机记录，任务求助另沿用原有服务端回执。
+
+
+### 香港到港动态与接待出行
+
+`GET /api/events/{event_id}/flight-arrivals/{flight}` 按航班号读取香港机场到港动态。可传 `service_date=YYYY-MM-DD`，支持香港当地今日和昨日。优先匹配主航班号，允许用唯一的代码共享号查询。结果保留 `source_updated_at`、`state`、`source_url` 和原到港记录 `flight`。多条匹配返回 409，未匹配时返回 `flight: null`。本入口与现有到港表和接机观察共用缓存。
+
+接待卡的 `travel_links` 提供 Google Maps 驾车路线、酒店地点和 Uber 链接。调度员可选填会合点及酒店上落车点的 WGS84 坐标。两个坐标都有时预填 Uber 路线，仅由乘客在 Uber 核价及确认。没有坐标的接待卡仍提供酒店地址、Google Maps 和 Uber 入口。
+
+`POST /api/events/{event_id}/arrival-plans/{plan_id}/route-estimate?version=<version>` 以接待卡当前版本查询 Google Maps 驾车距离及预计时间。调用者必须能查看该接待卡，落地响应包含 `provider`、`distance_meters`、`duration_seconds` 和 `observed_at`。结果即时显示，接机和酒店风险计算继续使用调度员确认的安排。

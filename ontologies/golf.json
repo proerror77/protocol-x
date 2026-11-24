@@ -1,8 +1,8 @@
 {
   "ontology_id": "golf.v1",
   "label": "高尔夫服务 Ontology",
-  "schema_version": "1.2.0",
-  "binding_version": "1.2.0",
+  "schema_version": "1.3.0",
+  "binding_version": "1.3.0",
   "arrival_process": {
     "id": "player_reception",
     "stages": [
@@ -17,6 +17,14 @@
       {"id":"UpdatePlayerPhoto","responsible":"dispatcher"},
       {"id":"ReschedulePickup","responsible":"dispatcher","requires_agent_proposal":true},
       {"id":"AssignVehicle","responsible":"dispatcher"}
+    ],
+    "queries": [
+      {"id":"ReadArrivalFlightStatus","source":"HKIA","binding":"GET /api/events/{event_id}/flight-arrivals/{flight}"},
+      {"id":"EstimateGroundTransfer","source":"GoogleMaps","binding":"POST /api/events/{event_id}/arrival-plans/{plan_id}/route-estimate"}
+    ],
+    "handoffs": [
+      {"id":"OpenGoogleMapsDirections","source":"GoogleMaps","binding":"travel_links.google_directions"},
+      {"id":"OpenUberRide","source":"Uber","binding":"travel_links.uber","confirmation":"rider_in_uber"}
     ],
     "automations": [
       {"id":"TrackArrival","trigger":"HKIA scheduled, estimated, delayed, landed, at_gate, cancelled","effect":"Track flight and notify assigned team"},

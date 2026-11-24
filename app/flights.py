@@ -1,7 +1,7 @@
 """Read the Hong Kong airport passenger-arrivals feed for the private pilot."""
 
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import re
 import subprocess
@@ -10,7 +10,7 @@ from time import monotonic
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 
 
 AIRPORT_TZ = ZoneInfo("Asia/Hong_Kong")
@@ -126,6 +126,11 @@ class ArrivalFeed:
             return None
 
 
+def lookup_flight_number(value):
+    match = re.fullmatch(r"([A-Z0-9]{2})(\d{1,4})([A-Z]?)", value.upper().replace(" ", ""))
+    return f"{match[1]}{int(match[2])}{match[3]}" if match else None
+
+
 def register_flights(app, identity, feed=None):
     feed = feed or ArrivalFeed()
 
@@ -134,6 +139,27 @@ def register_flights(app, identity, feed=None):
         if event_id not in HKG_EVENTS:
             raise HTTPException(404, "该活动没有配置到港航班")
         return feed.get()
+
+    @app.get("/api/events/{event_id}/flight-arrivals/{flight}")
+    def flight_status(event_id: str, flight: str, response: Response, service_date: date | None = None,
+                      _user=Depends(identity)):
+        if event_id not in HKG_EVENTS:
+            raise HTTPException(404, "该活动没有配置到港航班")
+        number = lookup_flight_number(flight)
+        if number is None:
+            raise HTTPException(422, "请填写航班号")
+        try:
+            snapshot = feed.get(service_date.isoformat()) if service_date else feed.get()
+        except ValueError:
+            raise HTTPException(422, "航班动态仅支持香港今日及昨日的到港服务日期") from None
+        operating = [row for row in snapshot["arrivals"] if lookup_flight_number(row["flights"][0]) == number]
+        matches = operating or [row for row in snapshot["arrivals"]
+                                if any(lookup_flight_number(code) == number for code in row["flights"][1:])]
+        if len(matches) > 1:
+            raise HTTPException(409, "机场公布多条同航班号记录，请在到港表核对始发地和时间")
+        response.headers["Cache-Control"] = "private, no-store"
+        result = {key: value for key, value in snapshot.items() if key != "arrivals"}
+        return {**result, "requested_flight": number, "flight": matches[0] if matches else None}
 
     @app.get("/internal/hkg-map-arrivals", include_in_schema=False)
     def map_arrivals(request: Request):

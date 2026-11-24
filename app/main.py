@@ -83,7 +83,7 @@ def integrations(settings, tak, voice_archive=None):
         {"id": "tak", "label": "OpenTAKServer / CoT",
          "status": "configured_unverified" if tak else "not_connected",
          "detail": "共享回执经 OpenTAKServer 回读确认。" if tak else "尚未配置 OpenTAKServer 接收端。"},
-        {"id": "external", "label": "外部信息", "status": "configured_unverified", "detail": "香港客运到港可在航班页查看，路线与天气另行接入。"}
+        {"id": "external", "label": "外部信息", "status": "configured_unverified", "detail": "航班页读取香港机场到港，接待卡提供 Google Maps 路线与 Uber 跳转。"}
     ]
 
 
