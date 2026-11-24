@@ -61,10 +61,13 @@ internal class ChannelAttachmentFiles(private val context: Context) {
             }
         } else FieldImages.read({ context.contentResolver.openInputStream(uri) }, 1600)
         checkNotNull(bitmap) { "无法读取这张照片" }
+        val (width, height) = fitMedia(bitmap.width, bitmap.height, 1600)
+        val photo = Bitmap.createScaledBitmap(bitmap, width, height, true)
         try {
-            writeJpeg(bitmap, draft.content, CHANNEL_PHOTO_BYTES)
-            writePoster(bitmap, draft.poster)
+            writeJpeg(photo, draft.content, CHANNEL_PHOTO_BYTES)
+            writePoster(photo, draft.poster)
         } finally {
+            if (photo !== bitmap) photo.recycle()
             bitmap.recycle()
         }
     }
@@ -134,9 +137,7 @@ internal class ChannelAttachmentFiles(private val context: Context) {
         writeMetadata(entry.draft.directory, metadata(entry.draft.directory).put("failure", message))
     }
 
-    fun remove(draft: Draft) {
-        draft.directory.deleteRecursively()
-    }
+    fun remove(draft: Draft) = draft.directory.deleteRecursively()
 
     private fun metadata(directory: File) =
         JSONObject(AtomicFile(File(directory, "message.json")).readFully().decodeToString())

@@ -3045,7 +3045,8 @@ class MainActivity : Activity() {
                     channelMediaDraft = prepared
                     prepared = null
                     channelMediaPreview.setImageBitmap(preview)
-                    setChannelEditorOpen(true)
+                    channelEditorOpen = true
+                    scrollToLatestConversation()
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -3058,7 +3059,7 @@ class MainActivity : Activity() {
                 if (picker.scope == channelComposerScope && channelRecipientActor == null) {
                     channelMediaJob = null
                     updateChannelComposer()
-                    if (failure != null) channelError(failure)
+                    failure?.let(::channelError)
                 }
             }
         }
@@ -3116,15 +3117,16 @@ class MainActivity : Activity() {
                 val entry = pendingChannelAttachments.firstOrNull { it.failure.isEmpty() } ?: break
                 try {
                     val published = active.publishChannelAttachment(entry)
-                    channelAttachmentFiles.remove(entry.draft)
+                    val removed = channelAttachmentFiles.remove(entry.draft)
                     if (client === active && eventId == entry.event && radio?.id == entry.channel)
                         channelAttachments = listOf(published) + channelAttachments.filter { it.getString("id") != entry.id }
+                    if (!removed) break
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: OpsException) {
                     if (error.status !in 400..499 || error.status in setOf(401, 408, 429)) break
                     val detail = if (error.status == 413) "服务器拒绝了这个附件的大小" else errorMessage(error)
-                    channelAttachmentFiles.setFailure(entry, detail)
+                    if (runCatching { channelAttachmentFiles.setFailure(entry, detail) }.isFailure) break
                 } catch (_: Exception) {
                     break
                 }
@@ -3182,17 +3184,19 @@ class MainActivity : Activity() {
                 val actions = row(bubble)
                 addWeighted(actions, linkButton("重试").apply {
                     setOnClickListener {
-                        channelAttachmentFiles.setFailure(pending, "")
-                        refreshPendingChannelAttachments()
-                        renderConversation()
-                        flushChannelAttachments()
+                        if (runCatching { channelAttachmentFiles.setFailure(pending, "") }.isSuccess) {
+                            refreshPendingChannelAttachments()
+                            renderConversation()
+                            flushChannelAttachments()
+                        } else showConnectionStatus("无法重试，请检查设备存储")
                     }
                 })
                 addWeighted(actions, linkButton("移除").apply {
                     setOnClickListener {
-                        channelAttachmentFiles.remove(pending.draft)
-                        refreshPendingChannelAttachments()
-                        renderConversation()
+                        if (channelAttachmentFiles.remove(pending.draft)) {
+                            refreshPendingChannelAttachments()
+                            renderConversation()
+                        } else showConnectionStatus("无法移除，请检查设备存储")
                     }
                 })
             }
