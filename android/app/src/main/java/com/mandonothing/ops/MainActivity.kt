@@ -757,6 +757,8 @@ class MainActivity : Activity() {
                 } catch (_: Exception) {
                     hint.text = "暂时无法连接项目服务"
                     retry.visibility = View.VISIBLE
+                    other.text = "连接其他试点"
+                    other.visibility = View.VISIBLE
                 }
             }
             return
@@ -1005,7 +1007,8 @@ class MainActivity : Activity() {
                 val passkeyExpires = cached?.optString("passkey_session_expires_at")?.let {
                     runCatching { Instant.parse(it) }.getOrNull()
                 }
-                if (cached != null && passkeyExpires?.isAfter(Instant.now()) == true && client == null &&
+                val cacheAuthorized = passkeyExpires?.isAfter(Instant.now()) ?: (cached?.optBoolean("email_enrollment") == false)
+                if (cached != null && cacheAuthorized && client == null &&
                     fieldNotice?.action != ArrivalWatchService.OPEN_ARRIVAL) {
                     restored.applyBootstrap(cached)
                     enterWorkspace(restored, cached, "", cachedOnly = true)
