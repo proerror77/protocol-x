@@ -46,14 +46,12 @@ S21 和 S26 使用 Google - Hybrid 底图，两个终端账号拥有 `ADS-B` 和
 
 升级 Ops 服务后，Android 的工作频道会显示「写消息 → 添加附件」。可拍照、从相册选图，或发送一段不超过 30 秒、16 MiB 的 MP4。附件由 Ops 数据库保存，随数据库一起备份。App 在前台恢复联网后会重试待发送的附件。
 
-在公网手机入口的 TLS server 内，为频道附件上传和读取配置独立的体积上限。以下 location 沿用现有 `/api/` 的 Ops 上游及认证请求头转发。将生产环境已有的额外代理选项一并保留。
+在公网手机入口的 TLS server 中，把以下附件规则放进现有的 `location ^~ /api/` 块。这样仅扩大附件路径的请求体上限，现有 API 的认证转发和其余请求体限制仍适用。
 
 ```nginx
 location ~ "^/api/field/events/[^/]+/channels/group-[0-9a-f]{32}/attachments(?:/[^/]+)?$" {
     client_max_body_size 17m;
     proxy_pass http://127.0.0.1:8000;
-    proxy_set_header Host $http_host;
-    proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
 
