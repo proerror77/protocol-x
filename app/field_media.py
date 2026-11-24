@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import Field, UUID4
 from fastapi.responses import JSONResponse
 
+from .channel_attachments import attachment_page
 from .channel_feed import feed_version
 from .field import Field as FieldDirectory, expiry, stamp
 from uuid import uuid4
@@ -259,7 +260,7 @@ def register_field_media(app, field, identity, settings):
                 current_user = field.authenticate(request.headers.get("Authorization"), conn)
                 if not current_user or current_user["actor"] != actor:
                     raise HTTPException(401, "设备绑定已失效")
-                field.authorized_channel(conn, event_id, channel_id, actor)
+                channel = field.authorized_channel(conn, event_id, channel_id, actor)
                 ops = feed_version(conn, channel_id, "ops")
                 voice = feed_version(conn, channel_id, "voice") if archive and archive.path == store.path else None
                 if voice is None:
@@ -276,6 +277,8 @@ def register_field_media(app, field, identity, settings):
                     records = channel_records(conn, event_id, channel_id)
                     data.update(channel_updates(conn, event_id, channel_id, field.definitions, current_user, records))
                     data["incident_tracks"] = incident_statuses(conn, event_id, channel_id, records)
+                    if channel["kind"] == "group":
+                        data.update(attachment_page(conn, event_id, channel_id))
             if reset:
                 items, older = archive.page(channel_id) if archive else ([], None)
                 data.update({"reset": True, "enabled": archive is not None, "items": items, "next_before": older})
