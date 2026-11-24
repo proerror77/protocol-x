@@ -1,5 +1,6 @@
 import hashlib
 import json
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import cbor2
@@ -31,14 +32,13 @@ def configure(monkeypatch, rp=False):
 def configure_email(monkeypatch):
     for key, value in {
         "OPS_FIELD_EMAIL_ENROLLMENT": "true",
-        "OPS_FIELD_EMAIL_OTP_SECRET": "key" * 16,
         "OPS_FIELD_SMTP_HOST": "smtp.example.test",
         "OPS_FIELD_SMTP_USERNAME": "sender@example.test",
         "OPS_FIELD_SMTP_PASSWORD": "fixture",
     }.items():
         monkeypatch.setenv(key, value)
     sent = {}
-    monkeypatch.setattr(EnrollmentMail, "send", lambda _, address, code: sent.update({address: code}))
+    monkeypatch.setattr(EnrollmentMail, "send", lambda _, address, link: sent.update({address: link}))
     return sent
 
 
@@ -98,12 +98,13 @@ def test_passkey_registration_login_and_revocation_with_signed_assertions(tmp_pa
         email = "crew@example.test"
         assert ok(client.post(url + "/login-email", headers=DISPATCH, json={"email": email.upper()}))["login_email"] == email
         assert client.post(url + "/login-email", json={"email": "other@example.test"}).status_code == 401
-        request = ok(client.post("/api/field/email/request", json={"email": email}))
-        body = {"request_id": request["request_id"], "code": sent[email]}
-        verified = ok(client.post("/api/field/email/verify", json=body))
-        assert set(verified) == {"enrollment_token"}
-        assert client.post("/api/field/email/verify", json=body).status_code == 401
-        invite = verified["enrollment_token"]
+        request = client.post("/api/field/email/request", json={"email": email})
+        assert request.status_code == 202 and request.json() == {"status": "accepted"}
+        link = urlsplit(sent[email])
+        assert (link.scheme, link.netloc, link.path, link.query) == ("https", RP, "/activate", "")
+        assert client.get(link.path).status_code == 200
+        assert client.get(link.path).headers["Cache-Control"] == "no-store"
+        invite = link.fragment
         assert client.get("/api/bootstrap", headers={"Authorization": f"Bearer {invite}"}).status_code == 401
         assert client.post("/api/field/bind", json={"code": invite}).status_code == 409
     else:
@@ -149,7 +150,7 @@ def test_passkey_registration_login_and_revocation_with_signed_assertions(tmp_pa
     if email_enrollment:
         sent.clear()
         with client.app.state.store.connect(write=True) as conn:
-            conn.execute("UPDATE field_email_codes SET requested_at=?", (expiry(-2),))
+            conn.execute("UPDATE field_email_links SET requested_at=?", (expiry(-2),))
         request = client.post("/api/field/email/request", json={"email": email})
         assert request.status_code == 202
         assert not sent
@@ -178,42 +179,39 @@ def test_passkey_registration_login_and_revocation_with_signed_assertions(tmp_pa
     assert client.post(PASSKEY + "/login/verify", json=assertion(later, counter=2)).status_code == 401
 
 
-def test_email_codes_limit_attempts_and_lose_access_when_email_changes(tmp_path, monkeypatch):
+def test_email_links_match_the_approved_recipient_and_expire(tmp_path, monkeypatch):
     configure(monkeypatch, rp=True)
     sent = configure_email(monkeypatch)
-    client = TestClient(create_app(tmp_path / "email-codes.db"))
+    client = TestClient(create_app(tmp_path / "email-links.db"))
     channel = group(client)
     email = "crew@example.test"
     body = {"name": "接机员", "callsign": "CREW", "channel_ids": [channel], "login_email": email}
     person = ok(client.post(BASE + "/people", headers=DISPATCH, json=body))["actor"]
     assert client.post(BASE + "/people", headers=DISPATCH, json=body).status_code == 409
     approval = f"{BASE}/people/{person}/login-email"
-    unlisted = client.post("/api/field/email/request", json={"email": "other@example.test"})
-    assert unlisted.status_code == 202
-    assert set(unlisted.json()) == {"request_id"}
+
+    def request_link(address):
+        result = client.post("/api/field/email/request", json={"email": address})
+        assert result.status_code == 202 and result.json() == {"status": "accepted"}
+
+    request_link("other@example.test")
+    assert not sent
+    request_link(email)
+    link = sent.pop(email)
+    request_link(email.upper())
     assert not sent
 
-    def request_code(address):
-        return ok(client.post("/api/field/email/request", json={"email": address}))["request_id"]
+    def begin(link):
+        return client.post(PASSKEY + "/register/options", json={"code": urlsplit(link).fragment})
 
-    def verify_code(request_id, code):
-        return client.post("/api/field/email/verify", json={"request_id": request_id, "code": code})
-
-    request_id = request_code(email)
-    assert client.post("/api/field/email/request", json={"email": email.upper()}).status_code == 429
-    actual_code = sent[email]
-    wrong_code = str((int(actual_code) + 1) % 100_000_000).zfill(8)
-    for _ in range(5):
-        assert verify_code(request_id, wrong_code).status_code == 401
-    assert verify_code(request_id, actual_code).status_code == 401
+    assert ok(begin(link))["options"]["user"]["displayName"] == body["name"]
     with client.app.state.store.connect(write=True) as conn:
-        conn.execute("UPDATE field_email_codes SET expires_at=?, requested_at=? WHERE id=?",
-                     (expiry(-1), expiry(-2), request_id))
-    assert verify_code(request_id, actual_code).status_code == 401
-    request_id = request_code(email)
-    grant = ok(verify_code(request_id, sent[email]))["enrollment_token"]
+        conn.execute("UPDATE field_email_links SET expires_at=? WHERE person_id=?", (expiry(-1), person))
+    assert begin(link).status_code == 409
+    request_link(email)
+    link = sent[email]
     ok(client.post(approval, headers=DISPATCH, json={"email": None}))
-    assert client.post(PASSKEY + "/register/options", json={"code": grant}).status_code == 409
+    assert begin(link).status_code == 409
 
 
 def test_email_enrollment_fails_closed_without_passkeys(tmp_path, monkeypatch):

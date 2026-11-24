@@ -278,7 +278,7 @@ class Field:
                 raise HTTPException(409, "该邮箱已经批准给其他人员")
             conn.execute("""INSERT INTO field_login_emails(person_id,email) VALUES (?,?)
                          ON CONFLICT(person_id) DO UPDATE SET email=excluded.email""", (person_id, email))
-        conn.execute("DELETE FROM field_email_codes WHERE person_id=?", (person_id,))
+        conn.execute("DELETE FROM field_email_links WHERE person_id=?", (person_id,))
 
     @staticmethod
     def event_access(conn, event_id, person_id):
@@ -584,7 +584,7 @@ class Field:
                     conn.execute("UPDATE field_devices SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL", (at, person_id))
                     conn.execute("DELETE FROM field_passkeys WHERE person_id=?", (person_id,))
                     if self.email_enrollment:
-                        conn.execute("DELETE FROM field_email_codes WHERE person_id=?", (person_id,))
+                        conn.execute("DELETE FROM field_email_links WHERE person_id=?", (person_id,))
                 else:
                     conn.execute("DELETE FROM field_suspensions WHERE person_id=?", (person_id,))
             return {"login_status": "suspended" if body.suspended else "active"}

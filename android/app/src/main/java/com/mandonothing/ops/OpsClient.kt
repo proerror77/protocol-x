@@ -28,9 +28,7 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
     suspend fun inspectInvite(code: String) = request("/api/field/invitation", JSONObject().put("code", code))
     suspend fun bind(code: String) = request("/api/field/bind", JSONObject().put("code", code))
     suspend fun passkeyStatus() = request("/api/field/passkeys")
-    suspend fun requestEmailCode(email: String) = request("/api/field/email/request", JSONObject().put("email", email))
-    suspend fun verifyEmailCode(id: String, code: String) =
-        request("/api/field/email/verify", JSONObject().put("request_id", id).put("code", code))
+    suspend fun requestEmailLink(email: String) = request("/api/field/email/request", JSONObject().put("email", email))
     suspend fun passkeyOptions(invite: String?) = if (invite == null)
         request("/api/field/passkeys/login/options", JSONObject())
     else request("/api/field/passkeys/register/options", JSONObject().put("code", invite))

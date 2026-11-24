@@ -75,7 +75,7 @@ def register_field_passkeys(app, field):
     @app.get("/.well-known/assetlinks.json")
     def assetlinks():
         fingerprint = ":".join(certificate[i:i + 2] for i in range(0, len(certificate), 2))
-        return [{"relation": ["delegate_permission/common.get_login_creds"],
+        return [{"relation": ["delegate_permission/common.get_login_creds", "delegate_permission/common.handle_all_urls"],
                  "target": {"namespace": "android_app", "package_name": ANDROID_PACKAGE,
                             "sha256_cert_fingerprints": [fingerprint]}}]
 
@@ -136,8 +136,7 @@ def register_field_passkeys(app, field):
             conn.execute("INSERT INTO field_passkeys VALUES (?,?,?,?,?)",
                          (credential_id, person["id"], verified.credential_public_key, verified.sign_count, stamp()))
             if field.email_enrollment:
-                conn.execute("""UPDATE field_email_codes SET code_hash=NULL,grant_hash=NULL,grant_expires_at=NULL
-                                WHERE person_id=?""", (person["id"],))
+                conn.execute("DELETE FROM field_email_links WHERE person_id=?", (person["id"],))
             else:
                 conn.execute("UPDATE field_invites SET used_at=? WHERE token_hash=?", (stamp(), invite_hash))
             consume(conn, body)

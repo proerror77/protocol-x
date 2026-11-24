@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val passkeyHost = providers.gradleProperty("protocolXPasskeyHost").getOrElse("protocolx.mandonothing.com")
+require(passkeyHost.matches(Regex("[a-z0-9.-]+")) && "." in passkeyHost) { "Configure a DNS name for Protocol X Passkeys." }
+
 android {
     namespace = "com.mandonothing.ops"
     compileSdk = 36
@@ -13,6 +16,8 @@ android {
         targetSdk = 35
         versionCode = 47
         versionName = "0.27.3"
+        manifestPlaceholders["protocolXPasskeyHost"] = passkeyHost
+        buildConfigField("String", "PASSKEY_HOST", "\"$passkeyHost\"")
     }
 
     compileOptions {
