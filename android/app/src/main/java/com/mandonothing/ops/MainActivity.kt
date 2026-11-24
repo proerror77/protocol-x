@@ -24,6 +24,7 @@ import android.os.IBinder
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextUtils
+import androidx.core.view.doOnLayout
 import androidx.core.widget.doAfterTextChanged
 import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
@@ -41,6 +42,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.MediaController
+import android.widget.VideoView
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
@@ -91,6 +94,37 @@ class MainActivity : Activity() {
     private lateinit var channelRadioPermission: Button
     private lateinit var channelRecipientPicker: Button
     private lateinit var channelAttach: Button
+    private lateinit var channelMediaAttach: Button
+    private lateinit var channelMediaPreview: ImageView
+    private val channelAttachmentFiles by lazy { ChannelAttachmentFiles(this) }
+    private var channelMediaDraft: ChannelAttachmentFiles.Draft? = null
+    private var channelMediaPicker: ChannelMediaPicker? = null
+    private var channelMediaSource: ChannelMediaSource? = null
+    private var channelMediaJob: Job? = null
+    private var channelUploadJob: Job? = null
+    private var channelAttachments = emptyList<JSONObject>()
+    private var pendingChannelAttachments = emptyList<ChannelAttachmentFiles.Entry>()
+    private var attachmentBefore: String? = null
+    private var attachmentHead: String? = null
+    private var pagedAttachments = false
+    private var attachmentHistoryJob: Job? = null
+    private var attachmentThumbJob: Job? = null
+    private var pendingChannelPosters = emptyList<Pair<JSONObject, ImageView>>()
+    private val channelPosterRetryAt = mutableMapOf<String, Long>()
+    private var channelMediaViewer: AlertDialog? = null
+    private val channelThumbnails = object : android.util.LruCache<String, Bitmap>(6 * 1024 * 1024) {
+        override fun sizeOf(key: String, bitmap: Bitmap) = bitmap.allocationByteCount
+    }
+    private data class ChannelMediaPicker(val scope: String, val video: Boolean, val file: File? = null)
+    private data class ChannelMediaSource(val picker: ChannelMediaPicker, val uri: Uri)
+    private data class ChannelMediaComposer(
+        val scope: String,
+        val caption: String,
+        val open: Boolean,
+        val draft: ChannelAttachmentFiles.Draft?,
+        val picker: ChannelMediaPicker?,
+        val source: ChannelMediaSource?,
+    )
     private var channelEditorOpen = false
     private var channelOptionsOpen = false
     private var channelComposerScope: String? = null
@@ -302,7 +336,10 @@ class MainActivity : Activity() {
         scroll = ScrollView(this).apply {
             isFillViewport = true
             clipToPadding = false
-            setOnScrollChangeListener { _, _, _, _, _ -> scheduleVisibleChannelReads(restart = true) }
+            setOnScrollChangeListener { _, _, _, _, _ ->
+                scheduleVisibleChannelReads(restart = true)
+                loadVisibleChannelPosters()
+            }
             addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
                 if (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom) {
                     scheduleVisibleChannelReads(restart = true)
@@ -363,12 +400,14 @@ class MainActivity : Activity() {
             taskDetailKey = previous.taskDetailKey
             radio = previous.radio
             groupBeforeDirect = previous.groupBeforeDirect
+            directoryData = previous.directory
             lastHeard = previous.lastHeard
             role = previous.role
             drafts.putAll(previous.drafts)
             pendingActions.putAll(previous.pendingActions)
             pendingReports.putAll(previous.pendingReports)
             showWorkspace(previous.eventId)
+            previous.channelMedia?.let(::restoreChannelMedia)
         }
     }
 
@@ -534,6 +573,8 @@ class MainActivity : Activity() {
         incomingPoll?.cancel()
         if (conference == null) callDialog?.dismiss()
         channelLoad?.cancel()
+        attachmentThumbJob?.cancel()
+        channelMediaViewer?.dismiss()
         voiceWarmup?.cancel()
         agentDialog?.dismiss()
         voiceService?.detachUi(voiceOwner)
@@ -554,8 +595,15 @@ class MainActivity : Activity() {
     override fun onRetainNonConfigurationInstance(): Any? {
         val connected = client ?: return null
         saveDraft()
+        val retainedMedia = channelComposerScope?.takeIf {
+            channelMediaDraft != null || channelMediaPicker != null || channelMediaSource != null
+        }?.let {
+            ChannelMediaComposer(it, channelText.text.toString(), channelEditorOpen,
+                channelMediaDraft, channelMediaPicker, channelMediaSource)
+        }
         return Session(connected, events, voiceEventId, videoEnabled, archiveEnabled, section, role, eventId, drafts.toMap(),
-            pendingActions.toMap(), pendingReports.toMap(), receiptScope, taskFilter, taskDetailKey, lastHeard, radio, groupBeforeDirect)
+            pendingActions.toMap(), pendingReports.toMap(), receiptScope, taskFilter, taskDetailKey, lastHeard, radio,
+            groupBeforeDirect, directoryData, retainedMedia)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -625,6 +673,14 @@ class MainActivity : Activity() {
             if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) launchQrCamera()
             return
         }
+        if (requestCode == CHANNEL_CAMERA_PERMISSION) {
+            val picker = channelMediaPicker ?: return
+            channelMediaPicker = null
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && picker.scope == channelComposerScope)
+                captureChannelPhoto(picker.scope)
+            else channelError("允许相机权限后可拍照")
+            return
+        }
         if (requestCode == PHOTO_PERMISSION_REQUEST) {
             if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) launchPhotoCamera()
             else pendingPhoto = null
@@ -644,6 +700,8 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         video?.close()
         player?.pause()
+        if (!isChangingConfigurations) clearChannelMediaDraft()
+        channelMediaViewer?.dismiss()
         scope.cancel()
         super.onDestroy()
     }
@@ -1259,6 +1317,8 @@ class MainActivity : Activity() {
             }
         }
         addWeighted(editorTools, channelOptionsButton)
+        channelMediaAttach = linkButton("添加附件").apply { setOnClickListener { chooseChannelMedia() } }
+        editorTools.addView(channelMediaAttach, LinearLayout.LayoutParams(WRAP, WRAP))
         editorTools.addView(linkButton("收起").apply {
             setOnClickListener { setChannelEditorOpen(false) }
         }, LinearLayout.LayoutParams(WRAP, WRAP))
@@ -1269,6 +1329,13 @@ class MainActivity : Activity() {
         channelAttach = linkButton("附照片").apply { setOnClickListener { pickNearbyPhoto() } }
         choices.addView(channelAttach, LinearLayout.LayoutParams(WRAP, WRAP))
         put(channelEditor, channelOptions, 0)
+        channelMediaPreview = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(92))
+            scaleType = ImageView.ScaleType.FIT_START
+            contentDescription = "待发送附件预览"
+            visibility = View.GONE
+        }
+        channelEditor.addView(channelMediaPreview)
         val inputRow = row(channelEditor)
         channelText = input("发给当前频道", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES).apply {
             filters = arrayOf(InputFilter.LengthFilter(NEARBY_TEXT_LIMIT))
@@ -1416,6 +1483,7 @@ class MainActivity : Activity() {
     private fun showSection(next: Section) {
         val open = if (next == Section.VIDEO && !videoAvailable()) Section.LIVE else next
         if (open != Section.VIDEO) disconnectVideo()
+        if (open != Section.LIVE) channelMediaViewer?.dismiss()
         if (section != open) stopReplay()
         section = open
         updateBackHandler()
@@ -1436,6 +1504,7 @@ class MainActivity : Activity() {
         if (open == Section.TASK_DETAIL) renderTaskDetail() else qrfDock.visibility = View.GONE
         radioHeader.visibility = if (open == Section.LIVE) View.VISIBLE else View.GONE
         if (open == Section.LIVE) {
+            loadVisibleChannelPosters()
             syncChannel()
             scrollToLatestConversation()
         } else scroll.scrollTo(0, 0)
@@ -1573,6 +1642,10 @@ class MainActivity : Activity() {
                 if (eventId != selected || client !== connected) return@launch
                 val recovered = !workspaceOnline
                 workspaceOnline = true
+                if (recovered) {
+                    channelPosterRetryAt.clear()
+                    loadVisibleChannelPosters()
+                }
                 if (recovered) updateVoice(voiceState, voiceLabel.text.toString())
                 if (connected.bound) runCatching { fieldOffline.saveWork(connected, selected, data) }
                 var directoryChanged = false
@@ -1592,6 +1665,7 @@ class MainActivity : Activity() {
                     android.os.SystemClock.elapsedRealtime() - onlineVoiceAttemptAt >= 30_000) connectVoice()
                 syncChannel()
                 flushPhotoOutbox()
+                flushChannelAttachments()
                 flushFieldQueue(connected, selected)
                 val selectedRef = if (hasWorkspace) selectedTask()?.getJSONObject("ref")?.refKey() else drafts[selected]?.subjectKey
                 val newTasks = data.getJSONArray("tasks").objects()
@@ -2073,6 +2147,17 @@ class MainActivity : Activity() {
     private fun clearChannelCursor() {
         channelCursor = null
         channelIncidentTracks = JSONObject()
+        attachmentHistoryJob?.cancel()
+        channelAttachments = emptyList()
+        attachmentBefore = null
+        attachmentHead = null
+        pagedAttachments = false
+        attachmentThumbJob?.cancel()
+        channelThumbnails.evictAll()
+        channelPosterRetryAt.clear()
+        pendingChannelPosters = emptyList()
+        channelMediaViewer?.dismiss()
+        refreshPendingChannelAttachments()
     }
 
     private fun syncChannel(wait: Int = 0) {
@@ -2087,8 +2172,9 @@ class MainActivity : Activity() {
                 val page = delta ?: if (includeAudio) connected.history(event, target)
                     else connected.channelDispatch(event, target)
                 if (client !== connected || eventId != event || radio != target || !visible) return@launch
+                flushChannelAttachments()
                 if (includeAudio != archiveEnabled) {
-                    clearChannelCursor()
+                    channelCursor = null
                     return@launch
                 }
                 if (delta != null) {
@@ -2128,7 +2214,22 @@ class MainActivity : Activity() {
                 if (!pagedVoice && page.has("next_before")) {
                     olderBefore = page.optString("next_before").takeUnless { it.isBlank() || it == "null" }
                 }
-                val changed = speech.map(JSONObject::toString) != voiceMessages.map(JSONObject::toString) ||
+                val attachments = page.optJSONArray("attachments")?.objects()?.let { latest ->
+                    val previousHead = attachmentHead
+                    attachmentHead = latest.firstOrNull()?.getString("id")
+                    val continuous = pagedAttachments && latest.any { it.getString("id") == previousHead }
+                    if (continuous) (latest + channelAttachments).distinctBy { it.getString("id") }
+                    else {
+                        if (pagedAttachments || attachmentBefore != page.optString("attachments_before", "")) {
+                            attachmentHistoryJob?.cancel()
+                        }
+                        pagedAttachments = false
+                        attachmentBefore = page.optString("attachments_before").takeUnless { it.isBlank() || it == "null" }
+                        latest
+                    }
+                } ?: channelAttachments
+                val changed = attachments.map(JSONObject::toString) != channelAttachments.map(JSONObject::toString) ||
+                    speech.map(JSONObject::toString) != voiceMessages.map(JSONObject::toString) ||
                     instructions.map(JSONObject::toString) != dispatchInstructions.map(JSONObject::toString) ||
                     suggestions.map(JSONObject::toString) != agentIncidents.map(JSONObject::toString) ||
                     agentUpdates.map(JSONObject::toString) != agentActivity.map(JSONObject::toString)
@@ -2136,6 +2237,7 @@ class MainActivity : Activity() {
                 dispatchInstructions = instructions
                 agentIncidents = suggestions
                 agentActivity = agentUpdates
+                channelAttachments = attachments
                 if (changed) renderConversation()
                 warmRecentOriginals(connected, event, target, incoming)
                 showNewestDispatchPrompt()
@@ -2493,6 +2595,11 @@ class MainActivity : Activity() {
         val followLatest = section == Section.LIVE && !scroll.canScrollVertically(1)
         unreadChannelText.clear()
         conversation.removeAllViews()
+        attachmentThumbJob?.cancel()
+        val posters = mutableListOf<Pair<JSONObject, ImageView>>()
+        if (attachmentBefore != null) {
+            put(conversation, button("加载更早附件").apply { setOnClickListener { loadOlderAttachments() } }, 5)
+        }
         if (olderBefore != null && client?.bound == true) {
             put(conversation, button("加载更早语音").apply { setOnClickListener { loadOlderVoice() } }, 5)
         }
@@ -2531,7 +2638,12 @@ class MainActivity : Activity() {
                     .put("route", (if (message.received || message.sender != current.sender)
                         message.deliveredVia else message.attemptedVia)?.name)
             } else emptyList()
-        val records = (activityText + voiceMessages + previews + dispatchInstructions + agentRows + nearby).sortedBy { item ->
+        val actor = active?.profile?.optString("actor").orEmpty()
+        val publishedIds = channelAttachments.map { it.getString("id") }.toSet()
+        val media = channelAttachments + pendingChannelAttachments.filter {
+            it.event == event && it.channel == target?.id && it.id !in publishedIds
+        }.map { it.item() }
+        val records = (activityText + voiceMessages + previews + dispatchInstructions + agentRows + nearby + media).sortedBy { item ->
             runCatching { Instant.parse(item.getString("created_at")) }.getOrDefault(Instant.EPOCH)
         }.let { if (client?.bound == true) it else it.takeLast(14) }
         if (records.isEmpty()) {
@@ -2541,9 +2653,14 @@ class MainActivity : Activity() {
         val myCallsign = "$callsign · " + if (role == "dispatcher") "调度员" else "工作人员"
         records.forEach { item ->
             val name = item.optString("speaker_name")
-            val mine = item.optBoolean("mine") || name.isNotEmpty() && name == myCallsign
+            val attachment = item.has("media_type")
+            val mine = if (attachment) item.optString("actor", actor) == actor
+                else item.optBoolean("mine") || name.isNotEmpty() && name == myCallsign
             val bubble = conversationBubble(mine)
-            if (item.optString("source") == "nearby") {
+            if (attachment) {
+                renderChannelAttachment(bubble, item)
+                    ?.let { posters.add(item to it) }
+            } else if (item.optString("source") == "nearby") {
                 renderNearbyRecord(bubble, item, mine)
             } else if (item.has("track_sid")) {
                 renderVoiceRecord(bubble, item)
@@ -2557,6 +2674,8 @@ class MainActivity : Activity() {
                 put(bubble, text(item.getString("text"), 16, INK), 5)
             }
         }
+        pendingChannelPosters = posters
+        if (posters.isNotEmpty()) conversation.doOnLayout { loadVisibleChannelPosters() }
         if (followLatest) scrollToLatestConversation()
         scheduleVisibleChannelReads()
     }
@@ -2885,11 +3004,376 @@ class MainActivity : Activity() {
             channelComposerScope = key
             channelRecipientActor = null
             channelPhoto = null
+            clearChannelMediaDraft()
             channelDraftKey = key
             privateContent.clear()
             channelText.setText(channelDrafts[key].orEmpty())
         }
         updateChannelComposer()
+    }
+
+    private fun chooseChannelMedia() {
+        val selected = channelComposerScope ?: return
+        if (channelMediaDraft != null) {
+            clearChannelMediaDraft()
+            updateChannelComposer()
+            return
+        }
+        AlertDialog.Builder(this).setTitle("添加频道附件")
+            .setItems(arrayOf("拍照", "从相册选照片", "选择 MP4 短影片（最多 30 秒 · 16 MB）")) { _, index ->
+                if (selected != channelComposerScope || channelRecipientActor != null) return@setItems
+                if (index == 0) {
+                    if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+                        captureChannelPhoto(selected)
+                    else {
+                        channelMediaPicker = ChannelMediaPicker(selected, false)
+                        requestPermissions(arrayOf(Manifest.permission.CAMERA), CHANNEL_CAMERA_PERMISSION)
+                    }
+                } else pickChannelMedia(selected, video = index == 2)
+            }.setNegativeButton("取消", null).show()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun pickChannelMedia(selected: String, video: Boolean) {
+        channelMediaPicker = ChannelMediaPicker(selected, video)
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).setType(if (video) "video/mp4" else "image/*")
+                .addCategory(Intent.CATEGORY_OPENABLE)
+            startActivityForResult(intent, CHANNEL_MEDIA_PICK)
+        } catch (_: Exception) {
+            channelMediaPicker = null
+            channelError("设备没有可用的附件选择器")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun captureChannelPhoto(selected: String) {
+        try {
+            val (file, intent) = FieldImages.capture(this)
+            channelMediaPicker = ChannelMediaPicker(selected, false, file)
+            startActivityForResult(intent, CHANNEL_PHOTO_CAPTURE)
+        } catch (_: Exception) {
+            channelMediaPicker?.file?.delete()
+            channelMediaPicker = null
+            channelError("无法打开相机")
+        }
+    }
+
+    private fun restoreChannelMedia(saved: ChannelMediaComposer) {
+        if (saved.scope != channelComposerScope) {
+            saved.draft?.let(channelAttachmentFiles::remove)
+            saved.picker?.file?.delete()
+            saved.source?.picker?.file?.delete()
+            return
+        }
+        channelEditorOpen = saved.open
+        channelText.setText(saved.caption)
+        channelMediaPicker = saved.picker
+        channelMediaDraft = saved.draft
+        saved.draft?.let { channelMediaPreview.setImageBitmap(BitmapFactory.decodeFile(it.poster.absolutePath)) }
+        saved.source?.let { prepareChannelMedia(it.picker, it.uri) }
+        updateChannelComposer()
+    }
+
+    private fun prepareChannelMedia(picker: ChannelMediaPicker, uri: Uri) {
+        val source = ChannelMediaSource(picker, uri)
+        channelMediaSource = source
+        channelMediaJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            var prepared: ChannelAttachmentFiles.Draft? = null
+            var failure: String? = null
+            try {
+                val preview = withContext(Dispatchers.IO) {
+                    channelAttachmentFiles.prepare(uri, picker.video).let {
+                        prepared = it
+                        BitmapFactory.decodeFile(it.poster.absolutePath)
+                    }
+                }
+                if (picker.scope == channelComposerScope && channelRecipientActor == null) {
+                    channelMediaDraft = prepared
+                    prepared = null
+                    channelMediaPreview.setImageBitmap(preview)
+                    channelEditorOpen = true
+                    scrollToLatestConversation()
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                failure = if (error is IllegalStateException) error.message else
+                    if (picker.video) "无法读取这段影片" else "无法读取这张照片"
+            } finally {
+                prepared?.let(channelAttachmentFiles::remove)
+                if (!isChangingConfigurations) picker.file?.delete()
+                if (channelMediaSource === source) {
+                    channelMediaSource = null
+                    channelMediaJob = null
+                    updateChannelComposer()
+                    failure?.let(::channelError)
+                }
+            }
+        }
+        channelMediaJob?.start()
+        updateChannelComposer()
+    }
+
+    private fun clearChannelMediaDraft() {
+        channelMediaJob?.cancel()
+        channelMediaJob = null
+        channelMediaPicker?.file?.delete()
+        channelMediaPicker = null
+        channelMediaSource?.picker?.file?.delete()
+        channelMediaSource = null
+        channelMediaDraft?.let(channelAttachmentFiles::remove)
+        channelMediaDraft = null
+        if (::channelMediaPreview.isInitialized) channelMediaPreview.setImageDrawable(null)
+    }
+
+    private fun queueChannelAttachment(draft: ChannelAttachmentFiles.Draft) {
+        val active = client?.takeIf { it.bound } ?: return
+        val event = eventId ?: return
+        val target = radio?.takeIf { it.kind == "group" } ?: return
+        if (channelRecipientActor != null || !directoryData.optBoolean("channel_attachments_enabled")) return
+        try {
+            channelAttachmentFiles.queue(draft, active.profile.getString("actor"), active.origin, event,
+                target.id, channelText.text.toString().trim())
+            channelMediaDraft = null
+            channelMediaPreview.setImageDrawable(null)
+            channelText.text.clear()
+            saveChannelDraft()
+            setChannelEditorOpen(false)
+            refreshPendingChannelAttachments()
+            renderConversation()
+            scrollToLatestConversation()
+            flushChannelAttachments()
+        } catch (_: Exception) {
+            channelError("无法保存附件，请重试")
+        }
+    }
+
+    private fun refreshPendingChannelAttachments() {
+        val active = client?.takeIf { it.bound }
+        val actor = active?.profile?.optString("actor")?.takeIf { it.isNotBlank() }
+        pendingChannelAttachments = if (active != null && actor != null)
+            channelAttachmentFiles.pending(actor, active.origin) else emptyList()
+    }
+
+    private fun flushChannelAttachments() {
+        val active = client?.takeIf { it.bound } ?: return
+        if (!visible || channelUploadJob?.isActive == true ||
+            !directoryData.optBoolean("channel_attachments_enabled")) return
+        refreshPendingChannelAttachments()
+        if (pendingChannelAttachments.none { it.failure.isEmpty() }) return
+        channelUploadJob = scope.launch {
+            while (visible && client === active) {
+                val entry = pendingChannelAttachments.firstOrNull { it.failure.isEmpty() } ?: break
+                try {
+                    val published = active.publishChannelAttachment(entry)
+                    val removed = channelAttachmentFiles.remove(entry.draft)
+                    if (client === active && eventId == entry.event && radio?.id == entry.channel)
+                        channelAttachments = listOf(published) + channelAttachments.filter { it.getString("id") != entry.id }
+                    if (!removed) break
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: OpsException) {
+                    if (error.status !in 400..499 || error.status in setOf(401, 408, 429)) break
+                    val detail = if (error.status == 413) "服务器拒绝了这个附件的大小" else errorMessage(error)
+                    if (runCatching { channelAttachmentFiles.setFailure(entry, detail) }.isFailure) break
+                } catch (_: Exception) {
+                    break
+                }
+                if (client !== active) break
+                refreshPendingChannelAttachments()
+                renderConversation()
+            }
+        }
+    }
+
+    private fun loadOlderAttachments() {
+        val active = client ?: return
+        val event = eventId ?: return
+        val target = radio ?: return
+        val before = attachmentBefore ?: return
+        if (attachmentHistoryJob?.isActive == true) return
+        attachmentHistoryJob = scope.launch {
+            try {
+                val page = active.channelAttachments(event, target.id, before)
+                if (client !== active || eventId != event || radio != target) return@launch
+                pagedAttachments = true
+                channelAttachments = (channelAttachments + page.getJSONArray("attachments").objects())
+                    .distinctBy { it.getString("id") }
+                attachmentBefore = page.optString("attachments_before").takeUnless { it.isBlank() || it == "null" }
+                renderConversation()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                showConnectionStatus(errorMessage(error))
+            }
+        }
+    }
+
+    private fun renderChannelAttachment(bubble: LinearLayout, item: JSONObject): ImageView? {
+        val id = item.getString("id")
+        val pending = pendingChannelAttachments.firstOrNull { it.id == id && !item.has("actor") }
+        val isVideo = item.getString("media_type") == CHANNEL_VIDEO_TYPE
+        val speaker = item.optString("speaker", "我")
+        bubble.addView(text("$speaker · " + recordTime(item.getString("created_at")), 13, ACCENT, true))
+        val caption = item.optString("caption")
+        if (caption.isNotBlank()) put(bubble, text(caption, 16, INK), 5)
+        val thumbnail = ImageView(this).apply {
+            minimumHeight = dp(96)
+            maxHeight = dp(172)
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = if (isVideo) "短影片封面" else "照片预览"
+        }
+        put(bubble, thumbnail, 6)
+        if (pending != null) {
+            thumbnail.setImageBitmap(BitmapFactory.decodeFile(pending.draft.poster.absolutePath))
+            if (pending.failure.isBlank()) put(bubble, text("待发送", 13, MUTED), 4)
+            else {
+                put(bubble, text("发送失败 · " + pending.failure, 13, SEND_ERROR), 4)
+                val actions = row(bubble)
+                addWeighted(actions, linkButton("重试").apply {
+                    setOnClickListener {
+                        if (runCatching { channelAttachmentFiles.setFailure(pending, "") }.isSuccess) {
+                            refreshPendingChannelAttachments()
+                            renderConversation()
+                            flushChannelAttachments()
+                        } else showConnectionStatus("无法重试，请检查设备存储")
+                    }
+                })
+                addWeighted(actions, linkButton("移除").apply {
+                    setOnClickListener {
+                        if (channelAttachmentFiles.remove(pending.draft)) {
+                            refreshPendingChannelAttachments()
+                            renderConversation()
+                        } else showConnectionStatus("无法移除，请检查设备存储")
+                    }
+                })
+            }
+            return null
+        }
+        val label = if (isVideo) "播放短影片 · " + attachmentDuration(item.optInt("duration_ms")) else "查看照片"
+        thumbnail.setOnClickListener { viewChannelAttachment(item) }
+        put(bubble, linkButton(label).apply { setOnClickListener { viewChannelAttachment(item) } }, 4)
+        val cached = channelThumbnails.get(id)
+        if (cached != null) thumbnail.setImageBitmap(cached)
+        return thumbnail.takeIf { cached == null }
+    }
+
+    private fun loadVisibleChannelPosters() {
+        if (!visible || section != Section.LIVE || attachmentThumbJob?.isActive == true ||
+            pendingChannelPosters.isEmpty()) return
+        val active = client ?: return
+        val event = eventId ?: return
+        val target = radio ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val position = IntArray(2)
+        scroll.getLocationOnScreen(position)
+        val top = position[1] - scroll.height
+        val bottom = position[1] + 2 * scroll.height
+        val candidates = pendingChannelPosters.filter { (item, image) ->
+            if (image.drawable != null || !image.isShown || image.height <= 0 ||
+                (channelPosterRetryAt[item.getString("id")] ?: 0) > now) false
+            else {
+                image.getLocationOnScreen(position)
+                position[1] < bottom && position[1] + image.height > top
+            }
+        }
+        if (candidates.isEmpty()) return
+        attachmentThumbJob = scope.launch {
+            for ((item, image) in candidates) {
+                val id = item.getString("id")
+                try {
+                    val bytes = active.channelPoster(event, target.id, id)
+                    val bitmap = withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+                    if (client !== active || eventId != event || radio != target) return@launch
+                    checkNotNull(bitmap)
+                    channelPosterRetryAt.remove(id)
+                    channelThumbnails.put(id, bitmap)
+                    image.setImageBitmap(bitmap)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    channelPosterRetryAt[id] = android.os.SystemClock.elapsedRealtime() + 30_000
+                }
+            }
+            attachmentThumbJob = null
+            conversation.post { loadVisibleChannelPosters() }
+        }
+    }
+
+    private fun viewChannelAttachment(item: JSONObject) {
+        val active = client ?: return
+        val event = eventId ?: return
+        val target = radio ?: return
+        val type = item.getString("media_type")
+        val isVideo = type == CHANNEL_VIDEO_TYPE
+        val status = text("正在加载…", 15, INK, false).apply { setPadding(dp(20), dp(16), dp(20), dp(16)) }
+        val body = column()
+        put(body, status, 0)
+        val dialog = AlertDialog.Builder(this).setTitle(if (isVideo) "频道短影片" else "频道照片")
+            .setView(body).setPositiveButton("关闭", null).create()
+        channelMediaViewer?.dismiss()
+        channelMediaViewer = dialog
+        var download: File? = null
+        var view: VideoView? = null
+        var controller: MediaController? = null
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            try {
+                val file = File.createTempFile("channel-attachment-", if (isVideo) ".mp4" else ".jpg", cacheDir)
+                download = file
+                active.downloadChannelAttachment(event, target.id, item.getString("id"), type, file)
+                if (!dialog.isShowing || client !== active || eventId != event || radio != target) return@launch
+                status.visibility = View.GONE
+                if (isVideo) {
+                    stopReplay()
+                    val player = VideoView(this@MainActivity)
+                    val mediaControls = MediaController(this@MainActivity)
+                    view = player
+                    controller = mediaControls
+                    player.setMediaController(mediaControls)
+                    player.setOnPreparedListener { player.start() }
+                    player.setOnErrorListener { _, _, _ ->
+                        status.text = "无法播放这段影片"
+                        status.visibility = View.VISIBLE
+                        true
+                    }
+                    body.addView(player, LinearLayout.LayoutParams(MATCH, dp(260)))
+                    player.setVideoPath(file.absolutePath)
+                } else {
+                    val bitmap = withContext(Dispatchers.Default) { BitmapFactory.decodeFile(file.absolutePath) }
+                    check(bitmap != null) { "照片无法读取" }
+                    val picture = ImageView(this@MainActivity).apply {
+                        adjustViewBounds = true
+                        maxHeight = dp(440)
+                        contentDescription = "频道照片"
+                        setImageBitmap(bitmap)
+                    }
+                    body.addView(picture, LinearLayout.LayoutParams(MATCH, WRAP))
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                status.text = errorMessage(error)
+                status.visibility = View.VISIBLE
+            } finally {
+                if (view == null || !dialog.isShowing) download?.delete()
+            }
+        }
+        dialog.setOnDismissListener {
+            if (channelMediaViewer === dialog) channelMediaViewer = null
+            job.cancel()
+            controller?.hide()
+            view?.stopPlayback()
+            download?.delete()
+        }
+        dialog.show()
+        job.start()
+    }
+
+    private fun attachmentDuration(ms: Int): String {
+        val seconds = (ms + 999) / 1000
+        return "%d:%02d".format(seconds / 60, seconds % 60)
     }
 
     private fun saveChannelDraft() {
@@ -2926,6 +3410,7 @@ class MainActivity : Activity() {
                 channelRecipientActor = target
                 channelDraftKey = if (target == null) config.scope else config.scope + "|" + target
                 channelPhoto = null
+                clearChannelMediaDraft()
                 channelText.setText(channelDrafts[channelDraftKey].orEmpty())
                 updateChannelComposer()
             }.setNegativeButton("取消", null).show()
@@ -2988,7 +3473,7 @@ class MainActivity : Activity() {
         channelComposer.visibility = if (group) View.VISIBLE else View.GONE
         if (!group) return
         channelWrite.visibility = if (channelEditorOpen) View.GONE else View.VISIBLE
-        channelWrite.text = if (channelText.text.isNullOrBlank() && channelPhoto == null) "写消息" else "继续写消息"
+        channelWrite.text = if (channelText.text.isNullOrBlank() && channelPhoto == null && channelMediaDraft == null) "写消息" else "继续写消息"
         channelEditor.visibility = if (channelEditorOpen) View.VISIBLE else View.GONE
         channelOptions.visibility = if (channelOptionsOpen) View.VISIBLE else View.GONE
         val session = nearbyPanel.currentSession()
@@ -3004,10 +3489,23 @@ class MainActivity : Activity() {
         channelRecipientPicker.isEnabled = config != null
         channelAttach.visibility = if (recipient != null) View.VISIBLE else View.GONE
         channelAttach.text = if (channelPhoto == null) "附照片" else "移除照片"
-        channelSend.isEnabled = session != null && (channelRecipientActor == null || recipient != null) &&
-            (!channelText.text.isNullOrBlank() || recipient != null && channelPhoto != null)
+        val canAttach = directoryData.optBoolean("channel_attachments_enabled") && channelRecipientActor == null
+        val preparing = channelMediaJob?.isActive == true
+        channelMediaAttach.visibility = if (canAttach) View.VISIBLE else View.GONE
+        channelMediaAttach.isEnabled = !preparing
+        channelMediaAttach.text = if (channelMediaDraft == null) "添加附件" else "移除附件"
+        channelMediaPreview.visibility = if (canAttach && channelMediaDraft != null) View.VISIBLE else View.GONE
+        channelSend.isEnabled = !preparing && if (canAttach && channelMediaDraft != null) true
+            else session != null && (channelRecipientActor == null || recipient != null) &&
+                (!channelText.text.isNullOrBlank() || recipient != null && channelPhoto != null)
         val links = NearbyService.diagnostics.value
         val hint = when {
+            preparing -> "正在准备附件…"
+            channelMediaDraft != null -> when {
+                !workspaceOnline -> "附件会在恢复联网后发送"
+                channelMediaDraft?.type == CHANNEL_VIDEO_TYPE -> "MP4 短影片 · " + attachmentDuration(channelMediaDraft?.durationMs ?: 0)
+                else -> "照片 · 封面预览"
+            }
             session == null -> nearbyPanel.unavailableMessage()
             channelRecipientActor != null && recipient == null -> "收件人离线密钥待同步"
             channelPhoto != null && links.wifiPeers == 0 -> "照片将等待 Wi-Fi Aware 送达"
@@ -3021,6 +3519,10 @@ class MainActivity : Activity() {
     }
 
     private fun sendChannelText() {
+        channelMediaDraft?.let {
+            queueChannelAttachment(it)
+            return
+        }
         val session = nearbyPanel.currentSession() ?: return
         val message = channelText.text.toString().trim()
         val actor = channelRecipientActor
@@ -4095,6 +4597,15 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == CHANNEL_MEDIA_PICK || requestCode == CHANNEL_PHOTO_CAPTURE) {
+            val picker = channelMediaPicker ?: return
+            channelMediaPicker = null
+            val uri = picker.file?.let(Uri::fromFile) ?: data?.data
+            if (resultCode == RESULT_OK && uri != null && picker.scope == channelComposerScope &&
+                channelRecipientActor == null) prepareChannelMedia(picker, uri)
+            else picker.file?.delete()
+            return
+        }
         if (requestCode == NEARBY_PHOTO) {
             val uri = data?.data
             if (resultCode == RESULT_OK && uri != null) readNearbyPhoto(uri)
@@ -4541,6 +5052,9 @@ class MainActivity : Activity() {
         channelRecipientActor = null
         channelPhoto = null
         channelPhotoRequest = null
+        clearChannelMediaDraft()
+        channelUploadJob?.cancel()
+        pendingChannelAttachments = emptyList()
         privateReader = null
         privateContent.clear()
         channelDrafts.clear()
@@ -4997,6 +5511,8 @@ class MainActivity : Activity() {
         val lastHeard: VoiceSpeaker?,
         val radio: RadioTarget?,
         val groupBeforeDirect: RadioTarget?,
+        val directory: JSONObject,
+        val channelMedia: ChannelMediaComposer?,
     )
 
     companion object {
@@ -5016,6 +5532,9 @@ class MainActivity : Activity() {
         private const val WORKSPACE_RETRY_MS = 10_000L
         private const val CHANNEL_READ_DWELL_MS = 250L
         private const val NEARBY_PHOTO = 4285
+        private const val CHANNEL_MEDIA_PICK = 4286
+        private const val CHANNEL_PHOTO_CAPTURE = 4287
+        private const val CHANNEL_CAMERA_PERMISSION = 4288
         private const val HELP = "request_assistance"
         private const val VIDEO_IDLE_TEXT = "等待现场画面"
         private const val DEFAULT_ADDRESS = "https://47.238.64.250:9443"

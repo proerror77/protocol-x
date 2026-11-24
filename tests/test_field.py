@@ -561,3 +561,93 @@ def test_nearby_agreement_directory_is_channel_and_device_scoped(field):
     assert client.post(route, headers=tb, json={"public_key": bsign, "agreement_key": bkey}).status_code == 401
     _, after = provision(ta, payload)
     assert after["recipients"] == [] and after["secret"] != sender["secret"]
+
+
+def test_channel_attachments_sync_permissions_retries_and_history(field, monkeypatch):
+    from struct import pack
+
+    from app import channel_attachments
+
+    client, _ = field
+    group_a = group(client, "会合点")
+    group_b = group(client, "其他频道")
+    sender = create_person(client, group_a, "现场甲")
+    receiver = ok(client.post(EVENT + "/people", headers=DISPATCH, json={
+        "name": "现场乙", "callsign": "现场乙", "channel_ids": [group_a, group_b],
+    }))
+    a, b, outsider = [bind_person(client, person) for person in
+                      (sender, receiver, create_person(client, group_b, "其他成员"))]
+    channel = EVENT + "/channels/" + group_a
+    attachments = channel + "/attachments"
+    changes = channel + "/changes"
+    monkeypatch.setattr(channel_attachments, "PAGE_SIZE", 1)
+
+    jpeg = b"\xff\xd8\xff\xc0\x00\x0b\x08\x00\x02\x00\x03\x01\x01\x11\x00\xff\xd9"
+
+    def box(kind, payload):
+        return pack(">I4s", len(payload) + 8, kind) + payload
+
+    def video(duration_ms):
+        header = box(b"mvhd", bytes(12) + pack(">II", 1000, duration_ms))
+        video_track = box(b"trak", box(b"mdia", box(b"hdlr", bytes(8) + b"vide")))
+        return box(b"ftyp", b"isom" + bytes(4)) + box(b"moov", header + video_track) + box(b"mdat", b"\x00")
+
+    def upload(media, kind, attachment_id=None, headers=a, url=attachments, caption="北门现场"):
+        route = f"{url}/{attachment_id or uuid4()}?poster_bytes={len(jpeg)}"
+        return client.put(route, content=jpeg + media, headers={
+            **headers, "Content-Type": kind, "X-Channel-Caption": base64.urlsafe_b64encode(caption.encode()).decode(),
+        })
+
+    assert ok(client.get(EVENT + "/directory", headers=a))["channel_attachments_enabled"]
+    assert not ok(client.get(EVENT + "/directory", headers=DISPATCH))["channel_attachments_enabled"]
+    initial = ok(client.get(changes, headers=b, params={"audio": "false"}))
+    assert initial["attachments"] == []
+    assert client.get(attachments, headers=outsider).status_code == 404
+    assert client.get(attachments, headers=DISPATCH).status_code == 403
+    assert upload(jpeg, "image/jpeg", headers=outsider).status_code == 404
+
+    photo_id = str(uuid4())
+    created = upload(jpeg, "image/jpeg", photo_id)
+    assert created.status_code == 201
+    photo = ok(created)
+    assert photo["caption"] == "北门现场" and photo["actor"] == sender["actor"]
+    assert photo["duration_ms"] is None
+    update = ok(client.get(changes, params={"cursor": initial["cursor"], "audio": "false"}, headers=b))
+    assert update["attachments"] == [photo]
+    assert ok(upload(jpeg, "image/jpeg", photo_id)) == photo
+    assert upload(jpeg, "image/jpeg", photo_id, caption="不同说明").status_code == 409
+    assert upload(jpeg, "image/jpeg", photo_id, headers=b).status_code == 409
+    assert not ok(client.get(changes, params={"cursor": update["cursor"], "audio": "false"}, headers=b))["changed"]
+
+    assert upload(video(30_001), "video/mp4").status_code == 422
+    assert upload(b"bad", "image/jpeg").status_code == 422
+    assert upload(jpeg, "text/html").status_code == 415
+    oversized = client.put(f"{attachments}/{uuid4()}?poster_bytes={len(jpeg)}", headers={
+        **a, "Content-Type": "image/jpeg",
+    }, content=iter((jpeg, b"0" * channel_attachments.PHOTO_BYTES, b"x")))
+    assert oversized.status_code == 413
+
+    movie = video(1500)
+    clip = ok(upload(movie, "video/mp4"))
+    assert clip["duration_ms"] == 1500
+    delta = ok(client.get(changes, params={"cursor": update["cursor"], "audio": "false"}, headers=b))
+    assert delta["attachments"] == [clip]
+    assert delta["attachments_before"] == clip["id"]
+    assert ok(client.get(attachments, params={"before": clip["id"]}, headers=b))["attachments"] == [photo]
+    media_url = attachments + "/" + clip["id"]
+    downloaded = client.get(media_url, headers=b)
+    assert downloaded.content == movie and downloaded.headers["content-type"] == "video/mp4"
+    assert downloaded.headers["cache-control"] == "private, no-store"
+    assert client.get(media_url + "?poster=true", headers=b).content == jpeg
+    assert client.get(media_url, headers=outsider).status_code == 404
+    assert client.get(channel.replace(group_a, group_b) + "/attachments/" + clip["id"], headers=outsider).status_code == 404
+
+    direct = ok(client.post(EVENT + "/direct", headers=a, json={"person_id": receiver["actor"]}))
+    assert client.get(EVENT + f"/channels/{direct['id']}/attachments", headers=b).status_code == 404
+    dispatcher = bind_person(client, ok(client.post(EVENT + "/people", headers=DISPATCH, json={
+        "name": "频道调度", "callsign": "频道调度", "role": "dispatcher", "channel_ids": [group_a],
+    })))
+    ok(client.post(channel + "/access/individual", headers=dispatcher,
+                   json={"person_id": receiver["actor"], "access": "deny"}))
+    assert client.get(media_url, headers=b).status_code == 404
+    assert client.get(changes, headers=b).status_code == 404
