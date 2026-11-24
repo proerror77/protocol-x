@@ -14,8 +14,8 @@ android {
         applicationId = "com.mandonothing.ops"
         minSdk = 26
         targetSdk = 35
-        versionCode = 47
-        versionName = "0.27.3"
+        versionCode = 48
+        versionName = "0.27.4"
         manifestPlaceholders["protocolXPasskeyHost"] = passkeyHost
         buildConfigField("String", "PASSKEY_HOST", "\"$passkeyHost\"")
     }
