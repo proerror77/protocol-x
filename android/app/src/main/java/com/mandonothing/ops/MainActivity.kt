@@ -99,11 +99,13 @@ class MainActivity : Activity() {
     private val channelAttachmentFiles by lazy { ChannelAttachmentFiles(this) }
     private var channelMediaDraft: ChannelAttachmentFiles.Draft? = null
     private var channelMediaPicker: ChannelMediaPicker? = null
+    private var channelMediaSource: ChannelMediaSource? = null
     private var channelMediaJob: Job? = null
     private var channelUploadJob: Job? = null
     private var channelAttachments = emptyList<JSONObject>()
     private var pendingChannelAttachments = emptyList<ChannelAttachmentFiles.Entry>()
     private var attachmentBefore: String? = null
+    private var attachmentHead: String? = null
     private var pagedAttachments = false
     private var attachmentHistoryJob: Job? = null
     private var attachmentThumbJob: Job? = null
@@ -114,6 +116,15 @@ class MainActivity : Activity() {
         override fun sizeOf(key: String, bitmap: Bitmap) = bitmap.allocationByteCount
     }
     private data class ChannelMediaPicker(val scope: String, val video: Boolean, val file: File? = null)
+    private data class ChannelMediaSource(val picker: ChannelMediaPicker, val uri: Uri)
+    private data class ChannelMediaComposer(
+        val scope: String,
+        val caption: String,
+        val open: Boolean,
+        val draft: ChannelAttachmentFiles.Draft?,
+        val picker: ChannelMediaPicker?,
+        val source: ChannelMediaSource?,
+    )
     private var channelEditorOpen = false
     private var channelOptionsOpen = false
     private var channelComposerScope: String? = null
@@ -389,12 +400,14 @@ class MainActivity : Activity() {
             taskDetailKey = previous.taskDetailKey
             radio = previous.radio
             groupBeforeDirect = previous.groupBeforeDirect
+            directoryData = previous.directory
             lastHeard = previous.lastHeard
             role = previous.role
             drafts.putAll(previous.drafts)
             pendingActions.putAll(previous.pendingActions)
             pendingReports.putAll(previous.pendingReports)
             showWorkspace(previous.eventId)
+            previous.channelMedia?.let(::restoreChannelMedia)
         }
     }
 
@@ -582,8 +595,15 @@ class MainActivity : Activity() {
     override fun onRetainNonConfigurationInstance(): Any? {
         val connected = client ?: return null
         saveDraft()
+        val retainedMedia = channelComposerScope?.takeIf {
+            channelMediaDraft != null || channelMediaPicker != null || channelMediaSource != null
+        }?.let {
+            ChannelMediaComposer(it, channelText.text.toString(), channelEditorOpen,
+                channelMediaDraft, channelMediaPicker, channelMediaSource)
+        }
         return Session(connected, events, voiceEventId, videoEnabled, archiveEnabled, section, role, eventId, drafts.toMap(),
-            pendingActions.toMap(), pendingReports.toMap(), receiptScope, taskFilter, taskDetailKey, lastHeard, radio, groupBeforeDirect)
+            pendingActions.toMap(), pendingReports.toMap(), receiptScope, taskFilter, taskDetailKey, lastHeard, radio,
+            groupBeforeDirect, directoryData, retainedMedia)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -680,7 +700,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         video?.close()
         player?.pause()
-        clearChannelMediaDraft()
+        if (!isChangingConfigurations) clearChannelMediaDraft()
         channelMediaViewer?.dismiss()
         scope.cancel()
         super.onDestroy()
@@ -2130,6 +2150,7 @@ class MainActivity : Activity() {
         attachmentHistoryJob?.cancel()
         channelAttachments = emptyList()
         attachmentBefore = null
+        attachmentHead = null
         pagedAttachments = false
         attachmentThumbJob?.cancel()
         channelThumbnails.evictAll()
@@ -2194,10 +2215,18 @@ class MainActivity : Activity() {
                     olderBefore = page.optString("next_before").takeUnless { it.isBlank() || it == "null" }
                 }
                 val attachments = page.optJSONArray("attachments")?.objects()?.let { latest ->
-                    if (!pagedAttachments) {
+                    val previousHead = attachmentHead
+                    attachmentHead = latest.firstOrNull()?.getString("id")
+                    val continuous = pagedAttachments && latest.any { it.getString("id") == previousHead }
+                    if (continuous) (latest + channelAttachments).distinctBy { it.getString("id") }
+                    else {
+                        if (pagedAttachments || attachmentBefore != page.optString("attachments_before", "")) {
+                            attachmentHistoryJob?.cancel()
+                        }
+                        pagedAttachments = false
                         attachmentBefore = page.optString("attachments_before").takeUnless { it.isBlank() || it == "null" }
+                        latest
                     }
-                    if (pagedAttachments) (latest + channelAttachments).distinctBy { it.getString("id") } else latest
                 } ?: channelAttachments
                 val changed = attachments.map(JSONObject::toString) != channelAttachments.map(JSONObject::toString) ||
                     speech.map(JSONObject::toString) != voiceMessages.map(JSONObject::toString) ||
@@ -3030,7 +3059,25 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun restoreChannelMedia(saved: ChannelMediaComposer) {
+        if (saved.scope != channelComposerScope) {
+            saved.draft?.let(channelAttachmentFiles::remove)
+            saved.picker?.file?.delete()
+            saved.source?.picker?.file?.delete()
+            return
+        }
+        channelEditorOpen = saved.open
+        channelText.setText(saved.caption)
+        channelMediaPicker = saved.picker
+        channelMediaDraft = saved.draft
+        saved.draft?.let { channelMediaPreview.setImageBitmap(BitmapFactory.decodeFile(it.poster.absolutePath)) }
+        saved.source?.let { prepareChannelMedia(it.picker, it.uri) }
+        updateChannelComposer()
+    }
+
     private fun prepareChannelMedia(picker: ChannelMediaPicker, uri: Uri) {
+        val source = ChannelMediaSource(picker, uri)
+        channelMediaSource = source
         channelMediaJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             var prepared: ChannelAttachmentFiles.Draft? = null
             var failure: String? = null
@@ -3055,8 +3102,9 @@ class MainActivity : Activity() {
                     if (picker.video) "无法读取这段影片" else "无法读取这张照片"
             } finally {
                 prepared?.let(channelAttachmentFiles::remove)
-                picker.file?.delete()
-                if (picker.scope == channelComposerScope && channelRecipientActor == null) {
+                if (!isChangingConfigurations) picker.file?.delete()
+                if (channelMediaSource === source) {
+                    channelMediaSource = null
                     channelMediaJob = null
                     updateChannelComposer()
                     failure?.let(::channelError)
@@ -3072,6 +3120,8 @@ class MainActivity : Activity() {
         channelMediaJob = null
         channelMediaPicker?.file?.delete()
         channelMediaPicker = null
+        channelMediaSource?.picker?.file?.delete()
+        channelMediaSource = null
         channelMediaDraft?.let(channelAttachmentFiles::remove)
         channelMediaDraft = null
         if (::channelMediaPreview.isInitialized) channelMediaPreview.setImageDrawable(null)
@@ -5461,6 +5511,8 @@ class MainActivity : Activity() {
         val lastHeard: VoiceSpeaker?,
         val radio: RadioTarget?,
         val groupBeforeDirect: RadioTarget?,
+        val directory: JSONObject,
+        val channelMedia: ChannelMediaComposer?,
     )
 
     companion object {
