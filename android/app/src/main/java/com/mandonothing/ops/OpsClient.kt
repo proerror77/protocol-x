@@ -140,6 +140,74 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
         }
     }
 
+    suspend fun channelAttachments(event: String, channel: String, before: String) =
+        request(attachmentPath(event, channel) + "?before=${segment(before)}")
+
+    suspend fun publishChannelAttachment(entry: ChannelAttachmentFiles.Entry) = withContext(Dispatchers.IO) {
+        val draft = entry.draft
+        val posterSize = draft.poster.length()
+        val path = attachmentPath(entry.event, entry.channel, entry.id) + "?poster_bytes=$posterSize"
+        val http = connection(path, 35_000)
+        try {
+            http.requestMethod = "PUT"
+            http.doOutput = true
+            http.setRequestProperty("Content-Type", draft.type)
+            http.setRequestProperty("Accept", "application/json")
+            http.setRequestProperty("X-Channel-Caption",
+                java.util.Base64.getUrlEncoder().encodeToString(entry.caption.encodeToByteArray()))
+            http.setFixedLengthStreamingMode(posterSize + draft.content.length())
+            http.outputStream.use { output ->
+                draft.poster.inputStream().use { input ->
+                    copyChannelMedia(input, output, CHANNEL_POSTER_BYTES, "附件封面太大")
+                }
+                draft.content.inputStream().use { input ->
+                    val limit = if (draft.type == CHANNEL_VIDEO_TYPE) CHANNEL_VIDEO_BYTES else CHANNEL_PHOTO_BYTES
+                    copyChannelMedia(input, output, limit, "附件太大")
+                }
+            }
+            val status = http.responseCode
+            if (status !in 200..299) throw responseError(http, status)
+            http.inputStream.bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
+        } finally {
+            http.disconnect()
+        }
+    }
+
+    suspend fun channelPoster(event: String, channel: String, id: String): ByteArray =
+        ByteArrayOutputStream().use { bytes ->
+            readChannelAttachment(event, channel, id, CHANNEL_PHOTO_TYPE, poster = true, output = bytes)
+            bytes.toByteArray()
+        }
+
+    suspend fun downloadChannelAttachment(event: String, channel: String, id: String, type: String, file: File) =
+        withContext(Dispatchers.IO) {
+            file.outputStream().use { readChannelAttachment(event, channel, id, type, poster = false, output = it) }
+        }
+
+    private suspend fun readChannelAttachment(event: String, channel: String, id: String, type: String,
+                                              poster: Boolean, output: java.io.OutputStream) = withContext(Dispatchers.IO) {
+        val path = attachmentPath(event, channel, id) + if (poster) "?poster=true" else ""
+        val http = connection(path, 25_000)
+        try {
+            val status = http.responseCode
+            if (status != 200) throw responseError(http, status)
+            check(http.contentType?.substringBefore(';') == type) { "附件格式不符" }
+            val limit = when {
+                poster -> CHANNEL_POSTER_BYTES
+                type == CHANNEL_VIDEO_TYPE -> CHANNEL_VIDEO_BYTES
+                else -> CHANNEL_PHOTO_BYTES
+            }
+            http.inputStream.use { copyChannelMedia(it, output, limit, "附件太大") }
+        } finally {
+            http.disconnect()
+        }
+    }
+
+    private fun attachmentPath(event: String, channel: String, id: String? = null): String {
+        val prefix = fieldPath(event, "channels/${segment(channel)}/attachments")
+        return if (id == null) prefix else "$prefix/${segment(id)}"
+    }
+
     suspend fun photos(eventId: String, taskId: String) = request(photoPath(eventId, taskId))
     suspend fun uploadPhoto(entry: PhotoOutbox.Entry) = request(photoPath(entry.event, entry.task),
         JSONObject().put("id", entry.id).put("jpeg", entry.jpeg), timeoutMs = 20_000)
@@ -356,26 +424,28 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
                     http.outputStream.use { it.write(bytes) }
                 }
                 val status = http.responseCode
-                if (status !in 200..299) {
-                    val error = http.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
-                    val failure = error?.let { runCatching { JSONObject(it) }.getOrNull() }
-                    val detail = failure?.optString("detail")
-                    val message = detail?.takeIf { it.isNotBlank() && !it.startsWith("[") }
-                    val unknownAgreementKey = if (status == 422) {
-                        val errors = failure?.optJSONArray("detail")
-                        val field = errors?.optJSONObject(0)
-                        val location = field?.optJSONArray("loc")
-                        errors?.length() == 1 && field?.optString("type") == "extra_forbidden" &&
-                            location?.length() == 2 && location.optString(0) == "body" &&
-                            location.optString(1) == "agreement_key"
-                    } else false
-                    throw OpsException(status, message ?: "请求失败（HTTP $status）", unknownAgreementKey)
-                }
+                if (status !in 200..299) throw responseError(http, status)
                 http.inputStream.bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
             } finally {
                 http.disconnect()
             }
         }
+
+    private fun responseError(http: HttpURLConnection, status: Int): OpsException {
+        val error = http.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        val failure = error?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val detail = failure?.optString("detail")
+        val message = detail?.takeIf { it.isNotBlank() && !it.startsWith("[") }
+        val unknownAgreementKey = if (status == 422) {
+            val errors = failure?.optJSONArray("detail")
+            val field = errors?.optJSONObject(0)
+            val location = field?.optJSONArray("loc")
+            errors?.length() == 1 && field?.optString("type") == "extra_forbidden" &&
+                location?.length() == 2 && location.optString(0) == "body" &&
+                location.optString(1) == "agreement_key"
+        } else false
+        return OpsException(status, message ?: "请求失败（HTTP $status）", unknownAgreementKey)
+    }
 
     private fun connection(path: String, timeoutMs: Int) = (URI(base + path).toURL().openConnection() as HttpURLConnection).apply {
         connectTimeout = timeoutMs

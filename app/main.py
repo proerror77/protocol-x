@@ -20,6 +20,7 @@ from .field import Field
 from .field_email import EnrollmentMail, register_field_email
 from .field_passkeys import register_field_passkeys
 from .field_media import register_field_media
+from .channel_attachments import register_channel_attachments
 from .field_nearby import register_field_nearby
 from .field_conference import register_conferences
 from .field_tasks import register_field_tasks
@@ -148,6 +149,7 @@ def create_app(db_path=None):
     register_ptt(app, identity, settings)
     register_voice_model_assets(app, identity)
     register_field_media(app, field, identity, settings)
+    register_channel_attachments(app, field, identity)
     register_conferences(app, field, identity, settings)
     if voice_archive:
         register_voice_archive(app, voice_archive, settings.media.event_id, identity)

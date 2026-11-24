@@ -41,3 +41,18 @@ S21 和 S26 使用 Google - Hybrid 底图，两个终端账号拥有 `ADS-B` 和
 正式资料由活动内已绑定的个人账号处理。调度员在「接待人员」登记成员或补发绑定码。接机员和司机以个人绑定码登录，查看本人任务及照片。实际会合、登车、酒店交接和入住依次记录。酒店预订状态由调度员根据已取得的订房确认填写。
 
 公网手机入口沿用 `golf-public-pilot.conf` 的 TLS 9443。在此 server 内将精确路径 `/arrivals` 与前缀 `/static/` 转发至回环 Ops 服务，并在现有 `/api/` 转发内为 `/api/events/{event_id}/arrival-plans/{plan_id}/players/{player_id}/photo` 单独设置 `client_max_body_size 704k`。照片和工作区响应需要保留 `Cache-Control: no-store`。
+
+## 频道照片和短影片
+
+升级 Ops 服务后，Android 的工作频道会显示「写消息 → 添加附件」。可拍照、从相册选图，或发送一段不超过 30 秒、16 MiB 的 MP4。附件由 Ops 数据库保存，随数据库一起备份。App 在前台恢复联网后会重试待发送的附件。
+
+在公网手机入口的 TLS server 中，把以下附件规则放进现有的 `location ^~ /api/` 块。这样仅扩大附件路径的请求体上限，现有 API 的认证转发和其余请求体限制仍适用。
+
+```nginx
+location ~ "^/api/field/events/[^/]+/channels/group-[0-9a-f]{32}/attachments(?:/[^/]+)?$" {
+    client_max_body_size 17m;
+    proxy_pass http://127.0.0.1:8000;
+}
+```
+
+运行 `nginx -t` 后再重载。用两个已绑定、同频道的测试账号发送并打开一张照片和一段短影片，再用其他频道的账号确认附件不可读取。

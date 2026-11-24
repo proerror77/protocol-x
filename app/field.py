@@ -392,7 +392,8 @@ class Field:
                              **({"login_email": row["login_email"]} if self.email_enrollment else {})}
                             if user["role"] == "dispatcher" else {})} for row in people],
                         "channels": [self.channel_info(conn, row, user["actor"]) for row in channels],
-                        "private_calls_enabled": bool(getattr(app.state, "field_conferences_enabled", False))}
+                        "private_calls_enabled": bool(getattr(app.state, "field_conferences_enabled", False)),
+                        "channel_attachments_enabled": "device" in user}
 
         @app.post("/api/field/events/{event_id}/channels", status_code=201)
         def create_channel(event_id: str, body: ChannelInput, user=Depends(identity)):
