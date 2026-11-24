@@ -44,6 +44,12 @@ S21 和 S26 使用 Google - Hybrid 底图，两个终端账号拥有 `ADS-B` 和
 
 公网手机入口沿用 `golf-public-pilot.conf` 的 TLS 9443。在此 server 内将精确路径 `/arrivals` 与前缀 `/static/` 转发至回环 Ops 服务，并在现有 `/api/` 转发内为 `/api/events/{event_id}/arrival-plans/{plan_id}/players/{player_id}/photo` 单独设置 `client_max_body_size 704k`。照片和工作区响应需要保留 `Cache-Control: no-store`。
 
+### 机场动态、Google Maps 和 Uber
+
+到港表、接机监测和单航班查询使用同一香港机场源。接待卡上的地图和 Uber 链接可在不配置 API Key 的环境打开。调度员核对实际允许上落车的点位后，可把两个 WGS84 坐标填入安排。乘客在 Uber App 或网页核对车型、价格与路线后自行确认。[Google Maps 链接](https://developers.google.com/maps/documentation/urls/get-started) · [Uber 跳转文档](https://developer.uber.com/docs/riders/ride-requests/tutorials/deep-links/introduction)
+
+如需在调度台直接查看 Google 车程，在获授权项目启用 Routes API 和计费，并以 `OPS_GOOGLE_MAPS_API_KEY_FILE` 指向 Ops 服务可读的私有密钥文件。将密钥限制在 Routes API 和服务端出口。查询仅在用户点击后发送，经授权的会合点和酒店地点用于计算，球员姓名、航班和酒店预订资料不传给地图或叫车方。Uber 开发者 Client ID 可由 `OPS_UBER_CLIENT_ID` 配置。[Google Routes API](https://developers.google.com/maps/documentation/routes/get-api-key) · [Uber Riders API 准入](https://developer.uber.com/docs/riders/introduction)
+
 ## 频道照片和短影片
 
 升级 Ops 服务后，Android 的工作频道会显示「写消息 → 添加附件」。可拍照、从相册选图，或发送一段不超过 30 秒、16 MiB 的 MP4。附件由 Ops 数据库保存，随数据库一起备份。App 在前台恢复联网后会重试待发送的附件。

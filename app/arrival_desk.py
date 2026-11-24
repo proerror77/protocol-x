@@ -17,6 +17,7 @@ from .flights import AIRPORT_TZ, HKG_EVENTS
 from .models import StrictModel
 from .pickup_watch import arrival_time, flight_number
 from .store import dump
+from .travel_actions import HongKongPoint, estimate_transfer, travel_links
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 Actor = Annotated[str, StringConstraints(pattern=r"^(demo-staff|person-[a-f0-9]{32})$")]
@@ -43,6 +44,7 @@ class PlayerInput(StrictModel):
 class HotelInput(StrictModel):
     name: Name
     address: Name
+    coordinates: HongKongPoint | None = None
     check_in: date
     check_out: date
     confirmed: bool = False
@@ -68,6 +70,7 @@ class PlanInput(StrictModel):
     greeter: Actor
     vehicle_id: Name
     meeting_point: Name
+    meeting_coordinates: HongKongPoint | None = None
     hotel: HotelInput
     notes: str = Field(default="", max_length=300)
     synthetic: bool = False
@@ -338,11 +341,12 @@ class ArrivalDesk:
                     raise HTTPException(409, "现场已经确认会合，请保留人员和航班历史")
                 if task["service_facts"][1]["status"] == "done" and (
                     body.vehicle_id != task["vehicle_id"] or data["meeting_point"] != previous["meeting_point"]
+                    or data.get("meeting_coordinates") != previous.get("meeting_coordinates")
                 ):
                     raise HTTPException(409, "已登车，请保留车辆和会合地点记录")
                 if task["service_facts"][2]["status"] == "done" and any(
-                    data["hotel"][key] != previous["hotel"][key]
-                    for key in ("name", "address", "check_in", "check_out")
+                    data["hotel"].get(key) != previous["hotel"].get(key)
+                    for key in ("name", "address", "coordinates", "check_in", "check_out")
                 ):
                     raise HTTPException(409, "已完成酒店交接，请保留已交接酒店和住宿日期")
                 if task["service_facts"][3]["status"] == "done" and not body.hotel.confirmed:
@@ -556,6 +560,7 @@ class ArrivalDesk:
                           "driver_name": names.get(item["owner"], item["owner"]), "greeter_name": names.get(plan["greeter"], plan["greeter"]),
                           "dispatcher": flight_link["dispatcher_id"] if flight_link else None,
                           "observation": observation, "window": window, "hotel_deadline": hotel_deadline,
+                          "travel_links": travel_links(plan),
                           "photos": photos, "next_stage": self.allowed_stage(plan, task, user, stages),
                           "history": [{**entry, "actor": names.get(entry["actor"], entry["actor"]),
                                        "label": labels.get(entry["kind"], "机场更新")}
@@ -616,6 +621,16 @@ def register_arrival_desk(app, identity, desk):
     @app.put(prefix)
     def save(event_id: str, plan_id: UUID4, body: PlanInput, user=Depends(identity)):
         return desk.save(event_id, str(plan_id), body, user)
+
+    @app.post(prefix + "/route-estimate")
+    def route_estimate(event_id: str, plan_id: UUID4, response: Response,
+                       version: int = Query(ge=1), user=Depends(identity)):
+        with desk.store.connect() as conn:
+            record, plan, _, _ = desk.load(conn, event_id, str(plan_id), user)
+            if record["version"] != version:
+                raise HTTPException(409, "接待安排已更新，请刷新后再查路线。")
+        response.headers["Cache-Control"] = "private, no-store"
+        return estimate_transfer(plan)
 
     @app.post(prefix + "/stages")
     def confirm(event_id: str, plan_id: UUID4, body: StageInput, user=Depends(identity)):

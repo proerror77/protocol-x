@@ -22,6 +22,29 @@ function button(label, click, primary = false) {
   return element;
 }
 
+function externalLink(label, href) {
+  const link = node('a', label, 'button button-secondary');
+  link.href = href;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  return link;
+}
+
+function coordinates(value) {
+  if (!value.trim()) return null;
+  const parts = value.trim().split(/[,，]/).map((part) => part.trim());
+  if (parts.length !== 2 || !parts.every((part) => /^-?\d+(?:\.\d+)?$/.test(part))) {
+    throw new Error('坐标请使用地图上的 WGS84 纬度,经度。');
+  }
+  const [latitude, longitude] = parts.map(Number);
+  if (latitude < 22.1 || latitude > 22.6 || longitude < 113.8 || longitude > 114.5) {
+    throw new Error('请输入香港范围内的 WGS84 坐标。');
+  }
+  return { latitude, longitude };
+}
+
+const pointValue = (point) => point ? `${point.latitude}, ${point.longitude}` : '';
+
 function hkt(value) {
   const date = new Date(value);
   return `${day.format(date).slice(5)} ${clock.format(date)} HKT`;
@@ -183,6 +206,32 @@ export function createArrivalDesk({ api, getPhoto, context, refresh, openTask, c
       details.append(node('dt', label), node('dd', value));
     }
     article.append(details);
+    const links = card.travel_links;
+    if (links) {
+      const travel = node('div', null, 'arrival-controls');
+      if (links.google_directions) travel.append(externalLink('Google Maps 路线', links.google_directions));
+      travel.append(externalLink('酒店地图', links.google_hotel));
+      travel.append(externalLink(links.uber_prefilled ? '在 Uber 核对路线及叫车' : '打开 Uber · 手动填写地址', links.uber));
+      article.append(travel);
+      if (links.google_estimate_configured) {
+        const result = node('p');
+        result.setAttribute('role', 'status');
+        const estimate = button('查询 Google 车程', async () => {
+          estimate.disabled = true;
+          result.textContent = '查询中…';
+          try {
+            const value = await api(`${path(state.eventId, card.id)}/route-estimate?version=${card.version}`, { method: 'POST' });
+            result.textContent = `${value.provider} · ${(value.distance_meters / 1000).toFixed(1)} 公里 · 约 ${Math.ceil(value.duration_seconds / 60)} 分钟 · ${hkt(value.observed_at)}`;
+          } catch (error) {
+            result.textContent = error.message;
+          } finally {
+            estimate.disabled = false;
+          }
+        });
+        travel.append(estimate);
+        article.append(result);
+      }
+    }
     const late = node('p', '', 'arrival-warning');
     late.dataset.arrivalLate = card.id;
     article.append(late);
@@ -306,6 +355,7 @@ export function createArrivalDesk({ api, getPhoto, context, refresh, openTask, c
     field(assignment, '香港到港日期', 'flight_date', 'date', { required: true, value: card?.flight_date || flight?.date || date });
     field(assignment, '主航班号', 'flight', 'text', { required: true, maxLength: 16, value: card?.flight || flight?.flight || '' });
     field(assignment, '机场会合点', 'meeting_point', 'text', { required: true, maxLength: 120, value: card?.meeting_point || '' });
+    field(assignment, '上车点坐标（选填，纬度,经度）', 'meeting_coordinates', 'text', { maxLength: 60, value: pointValue(card?.meeting_coordinates) });
     const planned = card?.task.pickup_at ? new Date(card.task.pickup_at) : null;
     field(assignment, '调度确认接机时间（香港）', 'pickup_at', 'datetime-local', { value: planned ? `${day.format(planned)}T${clock.format(planned)}` : '' });
     for (const [name, label, current] of [['greeter', '接机员', card?.greeter], ['driver', '司机', card?.task.owner]]) {
@@ -326,6 +376,7 @@ export function createArrivalDesk({ api, getPhoto, context, refresh, openTask, c
     const hotel = card?.hotel;
     field(stay, '酒店名称', 'hotel_name', 'text', { required: true, maxLength: 120, value: hotel?.name || '' });
     field(stay, '酒店地址', 'hotel_address', 'text', { required: true, maxLength: 120, value: hotel?.address || '' });
+    field(stay, '下车点坐标（选填，纬度,经度）', 'hotel_coordinates', 'text', { maxLength: 60, value: pointValue(hotel?.coordinates) });
     field(stay, '入住日期', 'check_in', 'date', { required: true, value: hotel?.check_in || card?.flight_date || flight?.date || date });
     field(stay, '退房日期', 'check_out', 'date', { required: true, value: hotel?.check_out || '' });
     field(stay, '酒店最晚入住时间（香港）', 'latest_check_in', 'time', { value: hotel?.latest_check_in?.slice(0, 5) || '' });
@@ -377,10 +428,12 @@ export function createArrivalDesk({ api, getPhoto, context, refresh, openTask, c
         const body = {
           expected_version: card?.version || 0, expected_task_version: card?.task.version || 0,
           players, flight_date: values.flight_date, flight: values.flight, meeting_point: values.meeting_point,
+          meeting_coordinates: coordinates(values.meeting_coordinates),
           driver: values.driver, greeter: values.greeter, vehicle_id: values.vehicle_id, notes: values.notes,
           pickup_at: values.pickup_at ? `${values.pickup_at}:00+08:00` : null, synthetic: demo.checked,
           hotel: {
             name: values.hotel_name, address: values.hotel_address, check_in: values.check_in, check_out: values.check_out,
+            coordinates: coordinates(values.hotel_coordinates),
             latest_check_in: values.latest_check_in || null, confirmed: Boolean(values.confirmed), instruction: values.instruction,
             transfer_minutes: Number(values.transfer_minutes),
           },
