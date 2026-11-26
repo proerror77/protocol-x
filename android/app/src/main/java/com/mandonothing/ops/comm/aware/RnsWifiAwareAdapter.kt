@@ -99,6 +99,7 @@ internal class RnsWifiAwareAdapter<R : Any, C : Any>(
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor(),
     private val clockMs: () -> Long = { System.currentTimeMillis() },
     private val nanoClock: () -> Long = { System.nanoTime() },
+    private val ifacGuard: RnsIfacFrameGuard? = null,
     private val outboundCodec: (CommOutboundMessage) -> ByteArray? = ::defaultEncodeOutbound,
 ) : CommTransportAdapter, RnsCustomInterfaceOutboundHandler, Closeable {
 
@@ -154,6 +155,7 @@ internal class RnsWifiAwareAdapter<R : Any, C : Any>(
             isBridgeCandidate: Boolean,
         ) {
             if (closed.get() || !hardwareAvailable) return
+            if (ifacGuard?.isPeerAllowed(peerId, nowMs = clockMs()) == false) return
             peerTokens[peerId] = remoteToken
             capacity.onPeerDiscovered(
                 peerId = peerId,
@@ -178,6 +180,7 @@ internal class RnsWifiAwareAdapter<R : Any, C : Any>(
 
         override fun onPeerHello(peerId: String, remoteToken: Int, rssiDbm: Int?, useUdp: Boolean) {
             if (closed.get() || !hardwareAvailable) return
+            if (ifacGuard?.isPeerAllowed(peerId, nowMs = clockMs()) == false) return
             if (sessions.containsKey(peerId) || callbackRegistry.contains(peerId)) return
             val now = clockMs()
             peerTokens[peerId] = remoteToken
@@ -225,7 +228,7 @@ internal class RnsWifiAwareAdapter<R : Any, C : Any>(
         }
 
         override fun onDataPathConnected(peerId: String, transport: RnsPeerLinkSession.Transport) {
-            if (closed.get()) {
+            if (closed.get() || ifacGuard?.isPeerAllowed(peerId, nowMs = clockMs()) == false) {
                 runCatching { transport.close() }
                 return
             }
@@ -319,11 +322,16 @@ internal class RnsWifiAwareAdapter<R : Any, C : Any>(
 
     override fun onOutboundFrame(interfaceTag: String, frame: ByteArray): Boolean {
         if (closed.get() || interfaceTag != this.interfaceTag || frame.isEmpty()) return false
+        val wireFrame = if (ifacGuard != null) {
+            ifacGuard.sealOutboundFrame(frame, clockMs()) ?: return false
+        } else {
+            frame
+        }
         val activeSessions = sessions.values.toList()
         if (activeSessions.isEmpty()) return false
         var sentCount = 0
         for (session in activeSessions) {
-            if (session.sendFrame(frame)) {
+            if (session.sendFrame(wireFrame)) {
                 sentCount++
             }
         }
@@ -482,10 +490,28 @@ internal class RnsWifiAwareAdapter<R : Any, C : Any>(
         }
     }
 
+    /** Immediately evicts a peer (e.g. upon RNS-05 revocation) and closes all sockets/callbacks. */
+    fun evictPeer(peerId: String) {
+        capacity.removePeer(peerId)
+        dropPeer(peerId, failed = true, skipCapacityUpdate = true)
+    }
+
     private fun handleInboundFrame(peerId: String, payload: ByteArray) {
         if (closed.get()) return
+        val verified = if (ifacGuard != null) {
+            val unwrapped = ifacGuard.verifyInboundFrame(peerId, payload, clockMs())
+            if (unwrapped == null) {
+                if (!ifacGuard.isPeerAllowed(peerId, nowMs = clockMs())) {
+                    evictPeer(peerId)
+                }
+                return
+            }
+            unwrapped
+        } else {
+            payload
+        }
         lastActivityMs = clockMs()
-        bridge.pushInboundFrame(interfaceTag, payload)
+        bridge.pushInboundFrame(interfaceTag, verified)
         publishState()
     }
 

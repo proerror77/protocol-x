@@ -74,6 +74,7 @@ internal class RnsBleL2capAdapter(
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor(),
     private val clockMs: () -> Long = { System.currentTimeMillis() },
     private val nanoClock: () -> Long = { System.nanoTime() },
+    private val ifacGuard: RnsIfacFrameGuard? = null,
     private val outboundCodec: (CommOutboundMessage) -> ByteArray? = ::defaultEncodeControlOutbound,
 ) : CommTransportAdapter, RnsCustomInterfaceOutboundHandler, Closeable {
 
@@ -137,6 +138,7 @@ internal class RnsBleL2capAdapter(
             if (closed.get() || !radioRunning.get()) return
             if (psm <= 0 || remoteToken == localDeviceToken) return
             val now = clockMs()
+            if (ifacGuard?.isPeerAllowed(peerId, nowMs = now) == false) return
             scannedPeers[peerId] = ScannedPeer(peerId, psm, handle)
             capacity.onPeerDiscovered(peerId = peerId, rssiDbm = rssiDbm, nowMs = now)
             if (Integer.compareUnsigned(localDeviceToken, remoteToken) >= 0) return
@@ -247,7 +249,7 @@ internal class RnsBleL2capAdapter(
     }
 
     private fun attachTransport(peerId: String, transport: RnsPeerLinkSession.Transport) {
-        if (closed.get() || !radioRunning.get()) {
+        if (closed.get() || !radioRunning.get() || ifacGuard?.isPeerAllowed(peerId, nowMs = clockMs()) == false) {
             runCatching { transport.close() }
             return
         }
@@ -284,10 +286,29 @@ internal class RnsBleL2capAdapter(
         publishState()
     }
 
+    /** Immediately evicts a peer (e.g. upon RNS-05 revocation) and closes its BLE socket. */
+    fun evictPeer(peerId: String) {
+        scannedPeers.remove(peerId)
+        capacity.removePeer(peerId)
+        dropPeer(peerId, failed = true, skipCapacityUpdate = true)
+    }
+
     private fun handleInboundFrame(peerId: String, payload: ByteArray) {
         if (closed.get() || !bridgeAttached.get()) return
+        val verified = if (ifacGuard != null) {
+            val unwrapped = ifacGuard.verifyInboundFrame(peerId, payload, clockMs())
+            if (unwrapped == null) {
+                if (!ifacGuard.isPeerAllowed(peerId, nowMs = clockMs())) {
+                    evictPeer(peerId)
+                }
+                return
+            }
+            unwrapped
+        } else {
+            payload
+        }
         lastActivityMs = clockMs()
-        bridge.pushInboundFrame(interfaceTag, payload)
+        bridge.pushInboundFrame(interfaceTag, verified)
         publishState()
     }
 
@@ -314,12 +335,17 @@ internal class RnsBleL2capAdapter(
 
     override fun onOutboundFrame(interfaceTag: String, frame: ByteArray): Boolean {
         if (closed.get() || interfaceTag != this.interfaceTag || frame.isEmpty()) return false
-        if (frame.size > BLE_MAX_FRAME_BYTES) return false
+        val wireFrame = if (ifacGuard != null) {
+            ifacGuard.sealOutboundFrame(frame, clockMs()) ?: return false
+        } else {
+            frame
+        }
+        if (wireFrame.size > BLE_MAX_FRAME_BYTES) return false
         val active = sessions.values.toList()
         if (active.isEmpty()) return false
         var sentCount = 0
         for (session in active) {
-            if (session.sendFrame(frame)) sentCount++
+            if (session.sendFrame(wireFrame)) sentCount++
         }
         if (sentCount > 0) {
             lastDeliveryMs = clockMs()
