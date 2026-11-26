@@ -789,6 +789,12 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_protocolx_rns_checksum_func_load_identity_from_secret(
     ): Int
+    external fun uniffi_protocolx_rns_checksum_func_bind_actor_device_to_rns(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_func_derive_event_ifac_config(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_func_verify_actor_device_binding(
+    ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsidentity_destination_hash_hex(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsidentity_identity_hash_hex(
@@ -805,6 +811,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_announce_lxmf(
     ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_announce_ptt(
+    ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_attach_custom_interface(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_close_link(
@@ -812,6 +820,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_destination_hash_hex(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_detach_custom_interface(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_drop_route(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_establish_link(
     ): Int
@@ -831,17 +841,37 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_lxmf_destination_hash_hex(
     ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_multi_hop_telemetry(
+    ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_persisted_lxmf_messages(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_persisted_lxmf_receipts(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_poll_events(
     ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_ptt_destination_hash_hex(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_purge_expired_routes(
+    ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_push_custom_inbound_frame(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_release_ptt_floor(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_request_ptt_floor(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_revoke_peer(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_revoked_peers(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_rotate_ifac_credentials(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_route_for_destination(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_send_link_packet(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_send_lxmf(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_send_ptt_frame(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_send_resource(
     ): Int
@@ -854,6 +884,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_status(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_stop(
+    ): Int
+    external fun uniffi_protocolx_rns_checksum_method_rnsnode_unrevoke_peer(
     ): Int
     external fun uniffi_protocolx_rns_checksum_method_rnsnode_update_custom_interface_metrics(
     ): Int
@@ -924,6 +956,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_protocolx_rns_fn_method_rnsnode_announce_lxmf(`ptr`: Long,`displayName`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Unit
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_announce_ptt(`ptr`: Long,uniffi_out_err: Pointer, 
+    ): Unit
     external fun uniffi_protocolx_rns_fn_method_rnsnode_attach_custom_interface(`ptr`: Long,`interfaceTag`: RustBuffer.ByValue,`kind`: RustBuffer.ByValue,`hwMtu`: Int,`bitrateBps`: Long,`bridge`: Long,uniffi_out_err: Pointer, 
     ): Unit
     external fun uniffi_protocolx_rns_fn_method_rnsnode_close_link(`ptr`: Long,`linkIdHex`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
@@ -931,6 +965,8 @@ internal object UniffiLib {
     external fun uniffi_protocolx_rns_fn_method_rnsnode_destination_hash_hex(`ptr`: Long,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
     external fun uniffi_protocolx_rns_fn_method_rnsnode_detach_custom_interface(`ptr`: Long,`interfaceTag`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): Byte
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_drop_route(`ptr`: Long,`destinationHashHex`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Byte
     external fun uniffi_protocolx_rns_fn_method_rnsnode_establish_link(`ptr`: Long,`destinationHashHex`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
@@ -950,18 +986,38 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_protocolx_rns_fn_method_rnsnode_lxmf_destination_hash_hex(`ptr`: Long,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_multi_hop_telemetry(`ptr`: Long,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
     external fun uniffi_protocolx_rns_fn_method_rnsnode_persisted_lxmf_messages(`ptr`: Long,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
     external fun uniffi_protocolx_rns_fn_method_rnsnode_persisted_lxmf_receipts(`ptr`: Long,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
     external fun uniffi_protocolx_rns_fn_method_rnsnode_poll_events(`ptr`: Long,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_ptt_destination_hash_hex(`ptr`: Long,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_purge_expired_routes(`ptr`: Long,uniffi_out_err: Pointer, 
+    ): Int
     external fun uniffi_protocolx_rns_fn_method_rnsnode_push_custom_inbound_frame(`ptr`: Long,`interfaceTag`: RustBuffer.ByValue,`frame`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Unit
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_release_ptt_floor(`ptr`: Long,`destinationHashHex`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`sessionId`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_request_ptt_floor(`ptr`: Long,`destinationHashHex`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`sessionId`: RustBuffer.ByValue,`priority`: Byte,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_revoke_peer(`ptr`: Long,`identityOrDestHashHex`: RustBuffer.ByValue,`reason`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): Unit
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_revoked_peers(`ptr`: Long,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_rotate_ifac_credentials(`ptr`: Long,`newIfac`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): Unit
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_route_for_destination(`ptr`: Long,`destinationHashHex`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
     external fun uniffi_protocolx_rns_fn_method_rnsnode_send_link_packet(`ptr`: Long,`linkIdHex`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Unit
     external fun uniffi_protocolx_rns_fn_method_rnsnode_send_lxmf(`ptr`: Long,`message`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_send_ptt_frame(`ptr`: Long,`destinationHashHex`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`sessionId`: RustBuffer.ByValue,`seq`: Long,`codec`: RustBuffer.ByValue,`durationMs`: Int,`audioBytes`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): Unit
     external fun uniffi_protocolx_rns_fn_method_rnsnode_send_resource(`ptr`: Long,`linkIdHex`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Unit
     external fun uniffi_protocolx_rns_fn_method_rnsnode_send_single_packet(`ptr`: Long,`destinationHashHex`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
@@ -973,6 +1029,8 @@ internal object UniffiLib {
     external fun uniffi_protocolx_rns_fn_method_rnsnode_status(`ptr`: Long,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
     external fun uniffi_protocolx_rns_fn_method_rnsnode_stop(`ptr`: Long,uniffi_out_err: Pointer, 
+    ): Unit
+    external fun uniffi_protocolx_rns_fn_method_rnsnode_unrevoke_peer(`ptr`: Long,`identityOrDestHashHex`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Unit
     external fun uniffi_protocolx_rns_fn_method_rnsnode_update_custom_interface_metrics(`ptr`: Long,`interfaceTag`: RustBuffer.ByValue,`metrics`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Unit
@@ -988,6 +1046,12 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_protocolx_rns_fn_func_load_identity_from_secret(`secretBytes`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
     ): Long
+    external fun uniffi_protocolx_rns_fn_func_bind_actor_device_to_rns(`actorId`: RustBuffer.ByValue,`deviceTokenHash`: RustBuffer.ByValue,`rnsDestinationHashHex`: RustBuffer.ByValue,`rnsIdentityHashHex`: RustBuffer.ByValue,`ed25519PublicKeyHex`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_func_derive_event_ifac_config(`eventId`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`sharedSecret`: RustBuffer.ByValue,`epoch`: Int,uniffi_out_err: Pointer, 
+    ): RustBuffer.ByValue
+    external fun uniffi_protocolx_rns_fn_func_verify_actor_device_binding(`binding`: RustBuffer.ByValue,uniffi_out_err: Pointer, 
+    ): Byte
     external fun ffi_protocolx_rns_rustbuffer_alloc(`size`: Long,uniffi_out_err: Pointer, 
     ): RustBuffer.ByValue
     external fun ffi_protocolx_rns_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: Pointer, 
@@ -1116,6 +1180,15 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_protocolx_rns_checksum_func_load_identity_from_secret() and 0xFFFF) != 32014) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_protocolx_rns_checksum_func_bind_actor_device_to_rns() and 0xFFFF) != 57999) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_func_derive_event_ifac_config() and 0xFFFF) != 13778) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_func_verify_actor_device_binding() and 0xFFFF) != 64186) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsidentity_destination_hash_hex() and 0xFFFF) != 24057) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1140,6 +1213,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_announce_lxmf() and 0xFFFF) != 17767) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_announce_ptt() and 0xFFFF) != 46322) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_attach_custom_interface() and 0xFFFF) != 63475) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1150,6 +1226,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_detach_custom_interface() and 0xFFFF) != 58416) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_drop_route() and 0xFFFF) != 61342) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_establish_link() and 0xFFFF) != 28363) {
@@ -1179,6 +1258,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_lxmf_destination_hash_hex() and 0xFFFF) != 7835) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_multi_hop_telemetry() and 0xFFFF) != 36443) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_persisted_lxmf_messages() and 0xFFFF) != 33748) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1188,13 +1270,40 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_poll_events() and 0xFFFF) != 60580) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_ptt_destination_hash_hex() and 0xFFFF) != 55575) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_purge_expired_routes() and 0xFFFF) != 27217) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_push_custom_inbound_frame() and 0xFFFF) != 16825) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_release_ptt_floor() and 0xFFFF) != 16937) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_request_ptt_floor() and 0xFFFF) != 56648) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_revoke_peer() and 0xFFFF) != 27083) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_revoked_peers() and 0xFFFF) != 51874) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_rotate_ifac_credentials() and 0xFFFF) != 4290) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_route_for_destination() and 0xFFFF) != 45872) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_send_link_packet() and 0xFFFF) != 65065) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_send_lxmf() and 0xFFFF) != 57232) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_send_ptt_frame() and 0xFFFF) != 63129) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_send_resource() and 0xFFFF) != 29219) {
@@ -1213,6 +1322,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_stop() and 0xFFFF) != 45564) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_unrevoke_peer() and 0xFFFF) != 36506) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_protocolx_rns_checksum_method_rnsnode_update_custom_interface_metrics() and 0xFFFF) != 32113) {
@@ -2156,7 +2268,7 @@ public object FfiConverterTypeRnsIdentity: FfiConverter<RnsIdentity, Long> {
 
 
 /**
- * Lifecycle, messaging, LXMF, and custom interface bridge controller for an RNS node.
+ * Lifecycle, messaging, LXMF, multi-hop relay, PTT, and custom bridge controller for an RNS node.
  */
 public interface RnsNodeInterface {
     
@@ -2166,6 +2278,11 @@ public interface RnsNodeInterface {
      * Broadcast an RNS announce for this node's `lxmf.delivery` destination.
      */
     fun `announceLxmf`(`displayName`: kotlin.String?)
+    
+    /**
+     * Broadcast an RNS announce for this node's `protocolx.ptt` destination.
+     */
+    fun `announcePtt`()
     
     /**
      * Attach a pluggable Kotlin radio interface (Wi-Fi Aware / BLE L2CAP / Custom) into the RNS engine.
@@ -2180,6 +2297,11 @@ public interface RnsNodeInterface {
      * Detach a previously attached pluggable custom interface.
      */
     fun `detachCustomInterface`(`interfaceTag`: kotlin.String): kotlin.Boolean
+    
+    /**
+     * Manually drop a cached route from the Reticulum path table (RNS-06).
+     */
+    fun `dropRoute`(`destinationHashHex`: kotlin.String): kotlin.Boolean
     
     fun `establishLink`(`destinationHashHex`: kotlin.String): kotlin.String
     
@@ -2208,6 +2330,11 @@ public interface RnsNodeInterface {
      */
     fun `lxmfDestinationHashHex`(): kotlin.String
     
+    /**
+     * Query multi-hop relay status, last link RTT, and active routing table entries (RNS-06).
+     */
+    fun `multiHopTelemetry`(): MultiHopTelemetry
+    
     fun `persistedLxmfMessages`(): List<LxmfInboundMessage>
     
     fun `persistedLxmfReceipts`(): List<LxmfDeliveryReceipt>
@@ -2215,9 +2342,49 @@ public interface RnsNodeInterface {
     fun `pollEvents`(): List<RnsInboundEvent>
     
     /**
+     * 16-byte `protocolx.ptt` Single destination hash as lowercase hex.
+     */
+    fun `pttDestinationHashHex`(): kotlin.String
+    
+    /**
+     * Evict routes that have exceeded `NodeConfig.path_ttl_ms` without activity (RNS-06).
+     */
+    fun `purgeExpiredRoutes`(): kotlin.UInt
+    
+    /**
      * Push a raw RNS wire frame received by a Kotlin radio adapter into the RNS engine.
      */
     fun `pushCustomInboundFrame`(`interfaceTag`: kotlin.String, `frame`: kotlin.ByteArray)
+    
+    /**
+     * Release floor ownership for a PTT channel/session and notify peer over RNS (RNS-10).
+     */
+    fun `releasePttFloor`(`destinationHashHex`: kotlin.String, `channelId`: kotlin.String, `sessionId`: kotlin.String): PttFloorControlMessage
+    
+    /**
+     * Request floor ownership for a PTT channel/session and transmit floor-control over RNS (RNS-10).
+     */
+    fun `requestPttFloor`(`destinationHashHex`: kotlin.String, `channelId`: kotlin.String, `sessionId`: kotlin.String, `priority`: kotlin.UByte): PttFloorControlMessage
+    
+    /**
+     * Revoke and blackhole a peer identity or destination hash at the node and bridge boundary (RNS-05).
+     */
+    fun `revokePeer`(`identityOrDestHashHex`: kotlin.String, `reason`: kotlin.String?)
+    
+    /**
+     * Return all currently revoked identity/destination hashes (lowercase 32-char hex).
+     */
+    fun `revokedPeers`(): List<kotlin.String>
+    
+    /**
+     * Rotate IFAC credentials dynamically across active TCP, UDP, and custom bridge interfaces (RNS-05).
+     */
+    fun `rotateIfacCredentials`(`newIfac`: IfacConfig)
+    
+    /**
+     * Query routing telemetry for a specific destination hash (RNS-06).
+     */
+    fun `routeForDestination`(`destinationHashHex`: kotlin.String): RouteTelemetry?
     
     fun `sendLinkPacket`(`linkIdHex`: kotlin.String, `payload`: kotlin.ByteArray)
     
@@ -2225,6 +2392,11 @@ public interface RnsNodeInterface {
      * Pack, sign, and deliver an LXMF message via Opportunistic, Direct-Link/Resource, or Propagation Node.
      */
     fun `sendLxmf`(`message`: LxmfOutboundMessage): LxmfDeliveryReceipt
+    
+    /**
+     * Transmit a compact encrypted PTT audio frame over RNS (RNS-10).
+     */
+    fun `sendPttFrame`(`destinationHashHex`: kotlin.String, `channelId`: kotlin.String, `sessionId`: kotlin.String, `seq`: kotlin.ULong, `codec`: kotlin.String, `durationMs`: kotlin.UInt, `audioBytes`: kotlin.ByteArray)
     
     fun `sendResource`(`linkIdHex`: kotlin.String, `payload`: kotlin.ByteArray)
     
@@ -2242,6 +2414,11 @@ public interface RnsNodeInterface {
     fun `stop`()
     
     /**
+     * Remove a peer identity or destination hash from the runtime revocation/blackhole list (RNS-05).
+     */
+    fun `unrevokePeer`(`identityOrDestHashHex`: kotlin.String)
+    
+    /**
      * Record per-peer RSSI, RTT, and bandwidth metrics from Android Wi-Fi Aware / BLE L2CAP adapters.
      */
     fun `updateCustomInterfaceMetrics`(`interfaceTag`: kotlin.String, `metrics`: CustomLinkMetrics)
@@ -2252,7 +2429,7 @@ public interface RnsNodeInterface {
 }
 
 /**
- * Lifecycle, messaging, LXMF, and custom interface bridge controller for an RNS node.
+ * Lifecycle, messaging, LXMF, multi-hop relay, PTT, and custom bridge controller for an RNS node.
  */
 open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
 {
@@ -2405,6 +2582,22 @@ open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
 
     
     /**
+     * Broadcast an RNS announce for this node's `protocolx.ptt` destination.
+     */
+    @Throws(ProtocolxRnsException::class)override fun `announcePtt`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_announce_ptt(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
      * Attach a pluggable Kotlin radio interface (Wi-Fi Aware / BLE L2CAP / Custom) into the RNS engine.
      */
     @Throws(ProtocolxRnsException::class)override fun `attachCustomInterface`(`interfaceTag`: kotlin.String, `kind`: CustomInterfaceKind, `hwMtu`: kotlin.UInt, `bitrateBps`: kotlin.ULong, `bridge`: RnsCustomInterfaceBridge)
@@ -2464,6 +2657,24 @@ open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
         it,
         
         FfiConverterString.lower(`interfaceTag`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Manually drop a cached route from the Reticulum path table (RNS-06).
+     */
+    @Throws(ProtocolxRnsException::class)override fun `dropRoute`(`destinationHashHex`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_drop_route(
+        it,
+        
+        FfiConverterString.lower(`destinationHashHex`),_status)
 }
     }
     )
@@ -2601,6 +2812,22 @@ open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
     }
     
 
+    
+    /**
+     * Query multi-hop relay status, last link RTT, and active routing table entries (RNS-06).
+     */override fun `multiHopTelemetry`(): MultiHopTelemetry {
+            return FfiConverterTypeMultiHopTelemetry.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_multi_hop_telemetry(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
     override fun `persistedLxmfMessages`(): List<LxmfInboundMessage> {
             return FfiConverterSequenceTypeLxmfInboundMessage.lift(
     callWithHandle {
@@ -2642,6 +2869,38 @@ open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
 
     
     /**
+     * 16-byte `protocolx.ptt` Single destination hash as lowercase hex.
+     */override fun `pttDestinationHashHex`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_ptt_destination_hash_hex(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Evict routes that have exceeded `NodeConfig.path_ttl_ms` without activity (RNS-06).
+     */override fun `purgeExpiredRoutes`(): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_purge_expired_routes(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Push a raw RNS wire frame received by a Kotlin radio adapter into the RNS engine.
      */
     @Throws(ProtocolxRnsException::class)override fun `pushCustomInboundFrame`(`interfaceTag`: kotlin.String, `frame`: kotlin.ByteArray)
@@ -2656,6 +2915,115 @@ open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
 }
     }
     
+    
+
+    
+    /**
+     * Release floor ownership for a PTT channel/session and notify peer over RNS (RNS-10).
+     */
+    @Throws(ProtocolxRnsException::class)override fun `releasePttFloor`(`destinationHashHex`: kotlin.String, `channelId`: kotlin.String, `sessionId`: kotlin.String): PttFloorControlMessage {
+            return FfiConverterTypePttFloorControlMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_release_ptt_floor(
+        it,
+        
+        FfiConverterString.lower(`destinationHashHex`),
+        FfiConverterString.lower(`channelId`),
+        FfiConverterString.lower(`sessionId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Request floor ownership for a PTT channel/session and transmit floor-control over RNS (RNS-10).
+     */
+    @Throws(ProtocolxRnsException::class)override fun `requestPttFloor`(`destinationHashHex`: kotlin.String, `channelId`: kotlin.String, `sessionId`: kotlin.String, `priority`: kotlin.UByte): PttFloorControlMessage {
+            return FfiConverterTypePttFloorControlMessage.lift(
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_request_ptt_floor(
+        it,
+        
+        FfiConverterString.lower(`destinationHashHex`),
+        FfiConverterString.lower(`channelId`),
+        FfiConverterString.lower(`sessionId`),
+        FfiConverterUByte.lower(`priority`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Revoke and blackhole a peer identity or destination hash at the node and bridge boundary (RNS-05).
+     */
+    @Throws(ProtocolxRnsException::class)override fun `revokePeer`(`identityOrDestHashHex`: kotlin.String, `reason`: kotlin.String?)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_revoke_peer(
+        it,
+        
+        FfiConverterString.lower(`identityOrDestHashHex`),
+        FfiConverterOptionalString.lower(`reason`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Return all currently revoked identity/destination hashes (lowercase 32-char hex).
+     */override fun `revokedPeers`(): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_revoked_peers(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Rotate IFAC credentials dynamically across active TCP, UDP, and custom bridge interfaces (RNS-05).
+     */
+    @Throws(ProtocolxRnsException::class)override fun `rotateIfacCredentials`(`newIfac`: IfacConfig)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_rotate_ifac_credentials(
+        it,
+        
+        FfiConverterTypeIfacConfig.lower(`newIfac`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Query routing telemetry for a specific destination hash (RNS-06).
+     */override fun `routeForDestination`(`destinationHashHex`: kotlin.String): RouteTelemetry? {
+            return FfiConverterOptionalTypeRouteTelemetry.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_route_for_destination(
+        it,
+        
+        FfiConverterString.lower(`destinationHashHex`),_status)
+}
+    }
+    )
+    }
     
 
     
@@ -2689,6 +3057,29 @@ open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Transmit a compact encrypted PTT audio frame over RNS (RNS-10).
+     */
+    @Throws(ProtocolxRnsException::class)override fun `sendPttFrame`(`destinationHashHex`: kotlin.String, `channelId`: kotlin.String, `sessionId`: kotlin.String, `seq`: kotlin.ULong, `codec`: kotlin.String, `durationMs`: kotlin.UInt, `audioBytes`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_send_ptt_frame(
+        it,
+        
+        FfiConverterString.lower(`destinationHashHex`),
+        FfiConverterString.lower(`channelId`),
+        FfiConverterString.lower(`sessionId`),
+        FfiConverterULong.lower(`seq`),
+        FfiConverterString.lower(`codec`),
+        FfiConverterUInt.lower(`durationMs`),
+        FfiConverterByteArray.lower(`audioBytes`),_status)
+}
+    }
+    
     
 
     
@@ -2778,6 +3169,23 @@ open class RnsNode: Disposable, AutoCloseable, RnsNodeInterface
 
     
     /**
+     * Remove a peer identity or destination hash from the runtime revocation/blackhole list (RNS-05).
+     */
+    @Throws(ProtocolxRnsException::class)override fun `unrevokePeer`(`identityOrDestHashHex`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_method_rnsnode_unrevoke_peer(
+        it,
+        
+        FfiConverterString.lower(`identityOrDestHashHex`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Record per-peer RSSI, RTT, and bandwidth metrics from Android Wi-Fi Aware / BLE L2CAP adapters.
      */
     @Throws(ProtocolxRnsException::class)override fun `updateCustomInterfaceMetrics`(`interfaceTag`: kotlin.String, `metrics`: CustomLinkMetrics)
@@ -2849,6 +3257,67 @@ public object FfiConverterTypeRnsNode: FfiConverter<RnsNode, Long> {
 
 
 /**
+ * Cryptographic binding between Protocol X actor/device identity and an RNS node identity (RNS-05).
+ */
+data class ActorDeviceBinding (
+    var `actorId`: kotlin.String
+    , 
+    var `deviceTokenHash`: kotlin.String
+    , 
+    var `rnsDestinationHashHex`: kotlin.String
+    , 
+    var `rnsIdentityHashHex`: kotlin.String
+    , 
+    var `ed25519PublicKeyHex`: kotlin.String
+    , 
+    var `bindingDigestHex`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeActorDeviceBinding: FfiConverterRustBuffer<ActorDeviceBinding> {
+    override fun read(buf: ByteBuffer): ActorDeviceBinding {
+        return ActorDeviceBinding(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ActorDeviceBinding) = (
+            FfiConverterString.allocationSize(value.`actorId`) +
+            FfiConverterString.allocationSize(value.`deviceTokenHash`) +
+            FfiConverterString.allocationSize(value.`rnsDestinationHashHex`) +
+            FfiConverterString.allocationSize(value.`rnsIdentityHashHex`) +
+            FfiConverterString.allocationSize(value.`ed25519PublicKeyHex`) +
+            FfiConverterString.allocationSize(value.`bindingDigestHex`)
+    )
+
+    override fun write(value: ActorDeviceBinding, buf: ByteBuffer) {
+            FfiConverterString.write(value.`actorId`, buf)
+            FfiConverterString.write(value.`deviceTokenHash`, buf)
+            FfiConverterString.write(value.`rnsDestinationHashHex`, buf)
+            FfiConverterString.write(value.`rnsIdentityHashHex`, buf)
+            FfiConverterString.write(value.`ed25519PublicKeyHex`, buf)
+            FfiConverterString.write(value.`bindingDigestHex`, buf)
+    }
+}
+
+
+
+/**
  * Per-peer link health metrics reported by custom Android radio adapters (Wi-Fi Aware / BLE L2CAP).
  */
 data class CustomLinkMetrics (
@@ -2899,6 +3368,64 @@ public object FfiConverterTypeCustomLinkMetrics: FfiConverterRustBuffer<CustomLi
             FfiConverterOptionalInt.write(value.`rssiDbm`, buf)
             FfiConverterOptionalUInt.write(value.`rttMs`, buf)
             FfiConverterOptionalULong.write(value.`estimatedBandwidthBps`, buf)
+    }
+}
+
+
+
+/**
+ * Private Interface Access Code (IFAC) network isolation credentials (RNS-05).
+ */
+data class IfacConfig (
+    var `networkName`: kotlin.String? = null 
+    , 
+    var `passphrase`: kotlin.String? = null 
+    , 
+    /**
+     * IFAC mask tag length in bytes (1..=64; 16 matches official Python RNS default).
+     */
+    var `ifacSizeBytes`: kotlin.UByte = 16u 
+    , 
+    /**
+     * When true, node startup fails unless non-empty IFAC credentials are supplied,
+     * and unauthenticated/wrong-IFAC frames are rejected at the interface boundary.
+     */
+    var `requirePrivateIfac`: kotlin.Boolean = false 
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeIfacConfig: FfiConverterRustBuffer<IfacConfig> {
+    override fun read(buf: ByteBuffer): IfacConfig {
+        return IfacConfig(
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterUByte.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: IfacConfig) = (
+            FfiConverterOptionalString.allocationSize(value.`networkName`) +
+            FfiConverterOptionalString.allocationSize(value.`passphrase`) +
+            FfiConverterUByte.allocationSize(value.`ifacSizeBytes`) +
+            FfiConverterBoolean.allocationSize(value.`requirePrivateIfac`)
+    )
+
+    override fun write(value: IfacConfig, buf: ByteBuffer) {
+            FfiConverterOptionalString.write(value.`networkName`, buf)
+            FfiConverterOptionalString.write(value.`passphrase`, buf)
+            FfiConverterUByte.write(value.`ifacSizeBytes`, buf)
+            FfiConverterBoolean.write(value.`requirePrivateIfac`, buf)
     }
 }
 
@@ -3169,6 +3696,57 @@ public object FfiConverterTypeLxmfOutboundMessage: FfiConverterRustBuffer<LxmfOu
 
 
 /**
+ * Multi-hop relay & link-RTT telemetry snapshot (RNS-06).
+ */
+data class MultiHopTelemetry (
+    var `enableTransportRelay`: kotlin.Boolean
+    , 
+    var `activeLinksCount`: kotlin.UInt
+    , 
+    var `lastLinkRttMs`: kotlin.ULong?
+    , 
+    var `routes`: List<RouteTelemetry>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMultiHopTelemetry: FfiConverterRustBuffer<MultiHopTelemetry> {
+    override fun read(buf: ByteBuffer): MultiHopTelemetry {
+        return MultiHopTelemetry(
+            FfiConverterBoolean.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterSequenceTypeRouteTelemetry.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MultiHopTelemetry) = (
+            FfiConverterBoolean.allocationSize(value.`enableTransportRelay`) +
+            FfiConverterUInt.allocationSize(value.`activeLinksCount`) +
+            FfiConverterOptionalULong.allocationSize(value.`lastLinkRttMs`) +
+            FfiConverterSequenceTypeRouteTelemetry.allocationSize(value.`routes`)
+    )
+
+    override fun write(value: MultiHopTelemetry, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`enableTransportRelay`, buf)
+            FfiConverterUInt.write(value.`activeLinksCount`, buf)
+            FfiConverterOptionalULong.write(value.`lastLinkRttMs`, buf)
+            FfiConverterSequenceTypeRouteTelemetry.write(value.`routes`, buf)
+    }
+}
+
+
+
+/**
  * Configuration for starting a Protocol X RNS + LXMF transport node.
  */
 data class NodeConfig (
@@ -3237,6 +3815,26 @@ data class NodeConfig (
      * Optional default LXMF propagation node destination hash hex (32 chars).
      */
     var `propagationNodeHex`: kotlin.String?
+    , 
+    /**
+     * Optional private-network IFAC credentials (RNS-05).
+     */
+    var `ifac`: IfacConfig? = null 
+    , 
+    /**
+     * Initial revoked identity/destination hashes (32-char hex) dropped at runtime/bridge boundaries (RNS-05).
+     */
+    var `revokedIdentityHashes`: List<kotlin.String> = listOf() 
+    , 
+    /**
+     * Optional announce rate-limit target window in milliseconds for attached interfaces (RNS-06).
+     */
+    var `announceRateLimitMs`: kotlin.ULong? = null 
+    , 
+    /**
+     * Optional route freshness TTL in milliseconds enforced by `purge_expired_routes` (RNS-06).
+     */
+    var `pathTtlMs`: kotlin.ULong? = null 
     
 ){
     
@@ -3266,6 +3864,10 @@ public object FfiConverterTypeNodeConfig: FfiConverterRustBuffer<NodeConfig> {
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalTypeIfacConfig.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterOptionalULong.read(buf),
         )
     }
 
@@ -3282,7 +3884,11 @@ public object FfiConverterTypeNodeConfig: FfiConverterRustBuffer<NodeConfig> {
             FfiConverterBoolean.allocationSize(value.`enableTransportRelay`) +
             FfiConverterOptionalString.allocationSize(value.`storageDir`) +
             FfiConverterOptionalString.allocationSize(value.`lxmfDisplayName`) +
-            FfiConverterOptionalString.allocationSize(value.`propagationNodeHex`)
+            FfiConverterOptionalString.allocationSize(value.`propagationNodeHex`) +
+            FfiConverterOptionalTypeIfacConfig.allocationSize(value.`ifac`) +
+            FfiConverterSequenceString.allocationSize(value.`revokedIdentityHashes`) +
+            FfiConverterOptionalULong.allocationSize(value.`announceRateLimitMs`) +
+            FfiConverterOptionalULong.allocationSize(value.`pathTtlMs`)
     )
 
     override fun write(value: NodeConfig, buf: ByteBuffer) {
@@ -3299,6 +3905,10 @@ public object FfiConverterTypeNodeConfig: FfiConverterRustBuffer<NodeConfig> {
             FfiConverterOptionalString.write(value.`storageDir`, buf)
             FfiConverterOptionalString.write(value.`lxmfDisplayName`, buf)
             FfiConverterOptionalString.write(value.`propagationNodeHex`, buf)
+            FfiConverterOptionalTypeIfacConfig.write(value.`ifac`, buf)
+            FfiConverterSequenceString.write(value.`revokedIdentityHashes`, buf)
+            FfiConverterOptionalULong.write(value.`announceRateLimitMs`, buf)
+            FfiConverterOptionalULong.write(value.`pathTtlMs`, buf)
     }
 }
 
@@ -3360,6 +3970,219 @@ public object FfiConverterTypeNodeStatus: FfiConverterRustBuffer<NodeStatus> {
             FfiConverterOptionalString.write(value.`tcpListenAddr`, buf)
             FfiConverterUInt.write(value.`knownPeersCount`, buf)
             FfiConverterUInt.write(value.`activeLinksCount`, buf)
+    }
+}
+
+
+
+/**
+ * Low-latency RNS multi-hop PTT floor-control signal (RNS-10).
+ */
+data class PttFloorControlMessage (
+    var `channelId`: kotlin.String
+    , 
+    var `sessionId`: kotlin.String
+    , 
+    var `actorHashHex`: kotlin.String
+    , 
+    var `action`: PttFloorAction
+    , 
+    var `priority`: kotlin.UByte
+    , 
+    var `timestampMs`: kotlin.ULong
+    , 
+    var `holderHashHex`: kotlin.String?
+    , 
+    var `detail`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePttFloorControlMessage: FfiConverterRustBuffer<PttFloorControlMessage> {
+    override fun read(buf: ByteBuffer): PttFloorControlMessage {
+        return PttFloorControlMessage(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypePttFloorAction.read(buf),
+            FfiConverterUByte.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PttFloorControlMessage) = (
+            FfiConverterString.allocationSize(value.`channelId`) +
+            FfiConverterString.allocationSize(value.`sessionId`) +
+            FfiConverterString.allocationSize(value.`actorHashHex`) +
+            FfiConverterTypePttFloorAction.allocationSize(value.`action`) +
+            FfiConverterUByte.allocationSize(value.`priority`) +
+            FfiConverterULong.allocationSize(value.`timestampMs`) +
+            FfiConverterOptionalString.allocationSize(value.`holderHashHex`) +
+            FfiConverterString.allocationSize(value.`detail`)
+    )
+
+    override fun write(value: PttFloorControlMessage, buf: ByteBuffer) {
+            FfiConverterString.write(value.`channelId`, buf)
+            FfiConverterString.write(value.`sessionId`, buf)
+            FfiConverterString.write(value.`actorHashHex`, buf)
+            FfiConverterTypePttFloorAction.write(value.`action`, buf)
+            FfiConverterUByte.write(value.`priority`, buf)
+            FfiConverterULong.write(value.`timestampMs`, buf)
+            FfiConverterOptionalString.write(value.`holderHashHex`, buf)
+            FfiConverterString.write(value.`detail`, buf)
+    }
+}
+
+
+
+/**
+ * Low-latency RNS multi-hop PTT audio frame packet (RNS-10).
+ */
+data class PttFramePacket (
+    var `channelId`: kotlin.String
+    , 
+    var `sessionId`: kotlin.String
+    , 
+    var `senderHashHex`: kotlin.String
+    , 
+    var `seq`: kotlin.ULong
+    , 
+    var `timestampMs`: kotlin.ULong
+    , 
+    var `codec`: kotlin.String
+    , 
+    var `durationMs`: kotlin.UInt
+    , 
+    var `audioBytes`: kotlin.ByteArray
+    , 
+    var `hopCount`: kotlin.UByte
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePttFramePacket: FfiConverterRustBuffer<PttFramePacket> {
+    override fun read(buf: ByteBuffer): PttFramePacket {
+        return PttFramePacket(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterUByte.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PttFramePacket) = (
+            FfiConverterString.allocationSize(value.`channelId`) +
+            FfiConverterString.allocationSize(value.`sessionId`) +
+            FfiConverterString.allocationSize(value.`senderHashHex`) +
+            FfiConverterULong.allocationSize(value.`seq`) +
+            FfiConverterULong.allocationSize(value.`timestampMs`) +
+            FfiConverterString.allocationSize(value.`codec`) +
+            FfiConverterUInt.allocationSize(value.`durationMs`) +
+            FfiConverterByteArray.allocationSize(value.`audioBytes`) +
+            FfiConverterUByte.allocationSize(value.`hopCount`)
+    )
+
+    override fun write(value: PttFramePacket, buf: ByteBuffer) {
+            FfiConverterString.write(value.`channelId`, buf)
+            FfiConverterString.write(value.`sessionId`, buf)
+            FfiConverterString.write(value.`senderHashHex`, buf)
+            FfiConverterULong.write(value.`seq`, buf)
+            FfiConverterULong.write(value.`timestampMs`, buf)
+            FfiConverterString.write(value.`codec`, buf)
+            FfiConverterUInt.write(value.`durationMs`, buf)
+            FfiConverterByteArray.write(value.`audioBytes`, buf)
+            FfiConverterUByte.write(value.`hopCount`, buf)
+    }
+}
+
+
+
+/**
+ * Multi-hop routing table entry telemetry (RNS-06).
+ */
+data class RouteTelemetry (
+    var `destinationHashHex`: kotlin.String
+    , 
+    var `hops`: kotlin.UByte
+    , 
+    var `nextHopHex`: kotlin.String?
+    , 
+    var `learnedAtMs`: kotlin.ULong
+    , 
+    var `lastActivityAtMs`: kotlin.ULong
+    , 
+    var `expiresAtMs`: kotlin.ULong
+    , 
+    var `interfaceTag`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRouteTelemetry: FfiConverterRustBuffer<RouteTelemetry> {
+    override fun read(buf: ByteBuffer): RouteTelemetry {
+        return RouteTelemetry(
+            FfiConverterString.read(buf),
+            FfiConverterUByte.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RouteTelemetry) = (
+            FfiConverterString.allocationSize(value.`destinationHashHex`) +
+            FfiConverterUByte.allocationSize(value.`hops`) +
+            FfiConverterOptionalString.allocationSize(value.`nextHopHex`) +
+            FfiConverterULong.allocationSize(value.`learnedAtMs`) +
+            FfiConverterULong.allocationSize(value.`lastActivityAtMs`) +
+            FfiConverterULong.allocationSize(value.`expiresAtMs`) +
+            FfiConverterString.allocationSize(value.`interfaceTag`)
+    )
+
+    override fun write(value: RouteTelemetry, buf: ByteBuffer) {
+            FfiConverterString.write(value.`destinationHashHex`, buf)
+            FfiConverterUByte.write(value.`hops`, buf)
+            FfiConverterOptionalString.write(value.`nextHopHex`, buf)
+            FfiConverterULong.write(value.`learnedAtMs`, buf)
+            FfiConverterULong.write(value.`lastActivityAtMs`, buf)
+            FfiConverterULong.write(value.`expiresAtMs`, buf)
+            FfiConverterString.write(value.`interfaceTag`, buf)
     }
 }
 
@@ -3654,6 +4477,46 @@ public object FfiConverterTypeProtocolxRnsError : FfiConverterRustBuffer<Protoco
 
 
 /**
+ * PTT floor control actions for low-latency multi-hop floor arbitration (RNS-10).
+ */
+
+enum class PttFloorAction {
+    
+    REQUEST,
+    GRANT,
+    BUSY,
+    PREEMPT,
+    RELEASE;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePttFloorAction: FfiConverterRustBuffer<PttFloorAction> {
+    override fun read(buf: ByteBuffer) = try {
+        PttFloorAction.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: PttFloorAction) = 4UL
+
+    override fun write(value: PttFloorAction, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
  * Inbound events surfaced by the RNS + LXMF transport core to Kotlin/native callers.
  */
 sealed class RnsInboundEvent {
@@ -3736,6 +4599,24 @@ sealed class RnsInboundEvent {
         companion object
     }
     
+    data class PttFrameReceived(
+        val `frame`: uniffi.protocolx_rns.PttFramePacket) : RnsInboundEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class PttFloorEvent(
+        val `control`: uniffi.protocolx_rns.PttFloorControlMessage) : RnsInboundEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
 
     
 
@@ -3781,6 +4662,12 @@ public object FfiConverterTypeRnsInboundEvent : FfiConverterRustBuffer<RnsInboun
                 )
             8 -> RnsInboundEvent.LxmfDeliveryStatus(
                 FfiConverterTypeLxmfDeliveryReceipt.read(buf),
+                )
+            9 -> RnsInboundEvent.PttFrameReceived(
+                FfiConverterTypePttFramePacket.read(buf),
+                )
+            10 -> RnsInboundEvent.PttFloorEvent(
+                FfiConverterTypePttFloorControlMessage.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
@@ -3849,6 +4736,20 @@ public object FfiConverterTypeRnsInboundEvent : FfiConverterRustBuffer<RnsInboun
                 + FfiConverterTypeLxmfDeliveryReceipt.allocationSize(value.`receipt`)
             )
         }
+        is RnsInboundEvent.PttFrameReceived -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypePttFramePacket.allocationSize(value.`frame`)
+            )
+        }
+        is RnsInboundEvent.PttFloorEvent -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypePttFloorControlMessage.allocationSize(value.`control`)
+            )
+        }
     }
 
     override fun write(value: RnsInboundEvent, buf: ByteBuffer) {
@@ -3897,6 +4798,16 @@ public object FfiConverterTypeRnsInboundEvent : FfiConverterRustBuffer<RnsInboun
             is RnsInboundEvent.LxmfDeliveryStatus -> {
                 buf.putInt(8)
                 FfiConverterTypeLxmfDeliveryReceipt.write(value.`receipt`, buf)
+                Unit
+            }
+            is RnsInboundEvent.PttFrameReceived -> {
+                buf.putInt(9)
+                FfiConverterTypePttFramePacket.write(value.`frame`, buf)
+                Unit
+            }
+            is RnsInboundEvent.PttFloorEvent -> {
+                buf.putInt(10)
+                FfiConverterTypePttFloorControlMessage.write(value.`control`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -4213,6 +5124,70 @@ public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteA
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeIfacConfig: FfiConverterRustBuffer<IfacConfig?> {
+    override fun read(buf: ByteBuffer): IfacConfig? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeIfacConfig.read(buf)
+    }
+
+    override fun allocationSize(value: IfacConfig?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeIfacConfig.allocationSize(value)
+        }
+    }
+
+    override fun write(value: IfacConfig?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeIfacConfig.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeRouteTelemetry: FfiConverterRustBuffer<RouteTelemetry?> {
+    override fun read(buf: ByteBuffer): RouteTelemetry? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeRouteTelemetry.read(buf)
+    }
+
+    override fun allocationSize(value: RouteTelemetry?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeRouteTelemetry.allocationSize(value)
+        }
+    }
+
+    override fun write(value: RouteTelemetry?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeRouteTelemetry.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeRnsInboundEvent: FfiConverterRustBuffer<RnsInboundEvent?> {
     override fun read(buf: ByteBuffer): RnsInboundEvent? {
         if (buf.get().toInt() == 0) {
@@ -4417,6 +5392,34 @@ public object FfiConverterSequenceTypeLxmfInboundMessage: FfiConverterRustBuffer
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeRouteTelemetry: FfiConverterRustBuffer<List<RouteTelemetry>> {
+    override fun read(buf: ByteBuffer): List<RouteTelemetry> {
+        val len = buf.getInt()
+        return List<RouteTelemetry>(len) {
+            FfiConverterTypeRouteTelemetry.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<RouteTelemetry>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeRouteTelemetry.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<RouteTelemetry>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeRouteTelemetry.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeRnsInboundEvent: FfiConverterRustBuffer<List<RnsInboundEvent>> {
     override fun read(buf: ByteBuffer): List<RnsInboundEvent> {
         val len = buf.getInt()
@@ -4479,6 +5482,56 @@ public object FfiConverterSequenceTypeRnsInboundEvent: FfiConverterRustBuffer<Li
     
         
         FfiConverterByteArray.lower(`secretBytes`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Bind `actor_id` and `device_token_hash` to an RNS identity, destination hash, and Ed25519 public key.
+         */
+    @Throws(ProtocolxRnsException::class) fun `bindActorDeviceToRns`(`actorId`: kotlin.String, `deviceTokenHash`: kotlin.String, `rnsDestinationHashHex`: kotlin.String, `rnsIdentityHashHex`: kotlin.String, `ed25519PublicKeyHex`: kotlin.String): ActorDeviceBinding {
+            return FfiConverterTypeActorDeviceBinding.lift(
+    uniffiRustCallWithError(ProtocolxRnsException) { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_func_bind_actor_device_to_rns(
+    
+        
+        FfiConverterString.lower(`actorId`),
+        FfiConverterString.lower(`deviceTokenHash`),
+        FfiConverterString.lower(`rnsDestinationHashHex`),
+        FfiConverterString.lower(`rnsIdentityHashHex`),
+        FfiConverterString.lower(`ed25519PublicKeyHex`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Derive deterministic per-event/channel IFAC network name and passphrase (`IfacSize::WIDE` = 16 bytes).
+         */ fun `deriveEventIfacConfig`(`eventId`: kotlin.String, `channelId`: kotlin.String?, `sharedSecret`: kotlin.String, `epoch`: kotlin.UInt): IfacConfig {
+            return FfiConverterTypeIfacConfig.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_func_derive_event_ifac_config(
+    
+        
+        FfiConverterString.lower(`eventId`),
+        FfiConverterOptionalString.lower(`channelId`),
+        FfiConverterString.lower(`sharedSecret`),
+        FfiConverterUInt.lower(`epoch`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Verify an `ActorDeviceBinding` digest and canonical field lengths.
+         */ fun `verifyActorDeviceBinding`(`binding`: ActorDeviceBinding): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_protocolx_rns_fn_func_verify_actor_device_binding(
+    
+        
+        FfiConverterTypeActorDeviceBinding.lower(`binding`),_status)
 }
     )
     }

@@ -7,8 +7,12 @@ import com.mandonothing.ops.comm.CommOutboundMessage
 import com.mandonothing.ops.comm.CommRouteMetadata
 import com.mandonothing.ops.comm.CommScope
 import com.mandonothing.ops.comm.CommTransportKind
+import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.time.Instant
 import java.util.Base64
+import java.util.UUID
 
 /** LXMF delivery modes aligned with RNS-03 Rust core & Python lxmf==1.3.1. */
 internal enum class LxmfDeliveryMode {
@@ -36,6 +40,95 @@ internal enum class LxmfAttachmentKind {
     BINARY_RESOURCE,
 }
 
+internal data class RnsIfacPolicy(
+    val networkName: String,
+    val passphrase: String,
+    val ifacSizeBytes: Int = 16,
+    val requirePrivateIfac: Boolean = true,
+)
+
+internal data class RnsActorDeviceBinding(
+    val actorId: String,
+    val deviceTokenHash: String,
+    val rnsDestinationHashHex: String,
+    val rnsIdentityHashHex: String,
+    val ed25519PublicKeyHex: String,
+    val bindingDigestHex: String,
+)
+
+internal data class RnsIfacLease(
+    val eventId: String,
+    val channelId: String,
+    val networkName: String,
+    val passphrase: String,
+    val ifacSizeBytes: Int = 16,
+    val requirePrivateIfac: Boolean = true,
+    val generation: String = "",
+    val expiresAtMs: Long,
+    val gatewayDestinationHashHex: String? = null,
+    val revokedDeviceHashes: Set<String> = emptySet(),
+    val revokedActors: Set<String> = emptySet(),
+) {
+    fun isLive(nowMs: Long = System.currentTimeMillis()): Boolean = expiresAtMs > nowMs
+
+    fun toPolicy(): RnsIfacPolicy = RnsIfacPolicy(
+        networkName = networkName,
+        passphrase = passphrase,
+        ifacSizeBytes = ifacSizeBytes,
+        requirePrivateIfac = requirePrivateIfac,
+    )
+}
+
+internal data class RnsIdentityBinding(
+    val accountKey: String,
+    val eventId: String,
+    val actorId: String,
+    val deviceTokenHash: String,
+    val rnsIdentityHashHex: String,
+    val rnsDestinationHashHex: String,
+    val lxmfDestinationHashHex: String = "",
+    val ed25519PubB64: String = "",
+    val x25519PubB64: String = "",
+    val ed25519PubHex: String = "",
+    val bindingDigestHex: String = "",
+    val boundAtMs: Long = 0L,
+)
+
+internal data class RnsSyncCheckpoints(
+    val accountKey: String,
+    val eventId: String,
+    val workspaceRevision: String? = null,
+    val channelCursors: Map<String, String> = emptyMap(),
+    val flightNoticeSeq: Long = 0L,
+    val updatedAtMs: Long = 0L,
+)
+
+internal data class RnsAttachmentTransferState(
+    val attachmentId: String,
+    val accountKey: String,
+    val eventId: String,
+    val channelId: String,
+    val taskId: String = "",
+    val targetKind: String,
+    val mediaType: String,
+    val caption: String = "",
+    val totalBytes: Long,
+    val posterBytes: Int = 0,
+    val durationMs: Int? = null,
+    val sha256Content: String,
+    val sha256Combined: String,
+    val chunkSize: Int = 16_384,
+    val chunkCount: Int,
+    val ackedChunks: Set<Int> = emptySet(),
+    val status: LxmfDeliveryStatus = LxmfDeliveryStatus.QUEUED,
+    val syncedToServer: Boolean = false,
+    val updatedAtMs: Long = 0L,
+) {
+    fun isCompleteTransfer(): Boolean = chunkCount <= 0 || ackedChunks.size >= chunkCount
+
+    fun nextChunkIndex(): Int? = (0 until chunkCount).firstOrNull { it !in ackedChunks }
+}
+
 internal data class RnsRuntimeConfig(
     val accountKey: String,
     val eventId: String,
@@ -50,6 +143,8 @@ internal data class RnsRuntimeConfig(
     val udpPeerAddr: String? = null,
     val propagationNodeHashHex: String? = null,
     val enableTransportRelay: Boolean = false,
+    val ifac: RnsIfacPolicy? = null,
+    val revokedIdentityHashes: List<String> = emptyList(),
 )
 
 internal data class RnsRuntimeSnapshot(
@@ -113,6 +208,9 @@ internal data class LxmfInboundRecord(
     val receivedAtMs: Long,
     val isPropagated: Boolean = false,
     val hopCount: Int = 1,
+    val readByNames: List<String> = emptyList(),
+    val syncedToServer: Boolean = false,
+    val targetMessageId: String = "",
 )
 
 internal data class LxmfDeliveryReceipt(
@@ -150,6 +248,111 @@ internal object RnsEnvelopeCodec {
         val audioSize = outbound.audioBytes?.size ?: 0
         val photoSize = outbound.photoBytes?.size ?: 0
         return textBytes + audioSize + photoSize + 96
+    }
+
+    fun canonicalJsonDump(value: Any?): String = when (value) {
+        null, JSONObject.NULL -> "null"
+        is Boolean, is Int, is Long, is Double -> value.toString()
+        is Float -> if (value.isNaN() || value.isInfinite()) "null" else value.toString()
+        is String -> JSONObject.quote(value)
+        is JSONObject -> {
+            val keys = value.keys().asSequence().toList().sorted()
+            keys.joinToString(prefix = "{", postfix = "}", separator = ",") { key ->
+                "${JSONObject.quote(key)}:${canonicalJsonDump(value.opt(key))}"
+            }
+        }
+        is JSONArray -> {
+            (0 until value.length()).joinToString(prefix = "[", postfix = "]", separator = ",") { idx ->
+                canonicalJsonDump(value.opt(idx))
+            }
+        }
+        is Map<*, *> -> {
+            value.keys.map { it.toString() }.sorted().joinToString(prefix = "{", postfix = "}", separator = ",") { key ->
+                "${JSONObject.quote(key)}:${canonicalJsonDump(value[key])}"
+            }
+        }
+        is Iterable<*> -> value.joinToString(prefix = "[", postfix = "]", separator = ",") { canonicalJsonDump(it) }
+        else -> JSONObject.quote(value.toString())
+    }
+
+    fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    fun sha256Hex(text: String): String = sha256Hex(text.toByteArray(Charsets.UTF_8))
+
+    fun toEnvelopeV1Kind(kind: CommEnvelopeKind): String = when (kind) {
+        CommEnvelopeKind.TASK_ACTION -> "task"
+        CommEnvelopeKind.ATTACHMENT_MEDIA -> "attachment"
+        CommEnvelopeKind.CONTROL_ACK, CommEnvelopeKind.DELIVERY_RECEIPT -> "delivery_receipt"
+        CommEnvelopeKind.SYSTEM_EVENT, CommEnvelopeKind.LIVE_VOICE_BURST -> "event"
+        CommEnvelopeKind.CHANNEL_TEXT,
+        CommEnvelopeKind.PRIVATE_ENCRYPTED,
+        CommEnvelopeKind.ASSISTANCE_ALERT,
+        CommEnvelopeKind.VOICE_NOTE,
+        -> "message"
+    }
+
+    fun envelopePriority(kind: CommEnvelopeKind, assistance: Boolean = false): Int = when {
+        assistance || kind == CommEnvelopeKind.ASSISTANCE_ALERT ||
+            kind == CommEnvelopeKind.DELIVERY_RECEIPT || kind == CommEnvelopeKind.CONTROL_ACK -> 3
+        kind == CommEnvelopeKind.TASK_ACTION -> 2
+        kind == CommEnvelopeKind.ATTACHMENT_MEDIA -> 0
+        else -> 1
+    }
+
+    fun encodeEnvelopeV1(
+        envelopeId: String,
+        kind: String,
+        eventId: String,
+        channelId: String?,
+        actor: String,
+        deviceId: String,
+        idempotencyKey: String,
+        payload: JSONObject,
+        priority: Int = 1,
+        hopCount: Int = 1,
+        originRadio: String = "RNS_IP",
+        ttlMs: Long = 86_400_000L,
+        createdAtIso: String = Instant.now().toString(),
+        rnsPacketHash: String? = null,
+    ): JSONObject {
+        val fingerprintMaterial = JSONObject()
+            .put("event_id", eventId)
+            .put("channel_id", channelId ?: JSONObject.NULL)
+            .put("actor", actor)
+            .put("kind", kind)
+            .put("payload", payload)
+        val fingerprint = sha256Hex(canonicalJsonDump(fingerprintMaterial))
+        return JSONObject()
+            .put("schema", SCHEMA_VERSION)
+            .put("envelope_id", envelopeId)
+            .put("kind", kind)
+            .put("event_id", eventId)
+            .put("channel_id", channelId ?: JSONObject.NULL)
+            .put("actor", actor)
+            .put("device_id", deviceId.ifBlank { actor })
+            .put("created_at", createdAtIso)
+            .put("ttl_ms", ttlMs)
+            .put("priority", priority)
+            .put("idempotency_key", idempotencyKey)
+            .put("fingerprint", fingerprint)
+            .put(
+                "trace",
+                JSONObject()
+                    .put("hop_count", hopCount)
+                    .put("origin_radio", originRadio)
+                    .put("rns_packet_hash", rnsPacketHash ?: JSONObject.NULL)
+                    .put("gateway_actor", JSONObject.NULL),
+            )
+            .put(
+                "auth",
+                JSONObject()
+                    .put("key_id", deviceId.ifBlank { actor })
+                    .put("public_key", "")
+                    .put("certificate", "")
+                    .put("signature", ""),
+            )
+            .put("payload", payload)
     }
 
     fun encodeTitle(outbound: CommOutboundMessage): String = JSONObject()
@@ -232,9 +435,15 @@ internal object RnsEnvelopeCodec {
             isPrivate = record.isPrivate,
             isMine = false,
             createdAtMs = record.receivedAtMs,
-            deliveryState = CommDeliveryState.DELIVERED,
-            syncedToServer = false,
-            needsReadReceipt = !record.assistance && audioB64.isEmpty(),
+            deliveryState = if (record.syncedToServer) CommDeliveryState.SYNCED else CommDeliveryState.DELIVERED,
+            syncedToServer = record.syncedToServer,
+            needsReadReceipt = !record.assistance && audioB64.isEmpty() &&
+                record.envelopeKind != CommEnvelopeKind.CONTROL_ACK &&
+                record.envelopeKind != CommEnvelopeKind.DELIVERY_RECEIPT &&
+                record.envelopeKind != CommEnvelopeKind.TASK_ACTION &&
+                record.envelopeKind != CommEnvelopeKind.ATTACHMENT_MEDIA,
+            readByMe = scope.actorId.isNotBlank() && scope.actorId in record.readByNames,
+            readByNames = record.readByNames,
             route = CommRouteMetadata(
                 deliveredTransport = CommTransportKind.RNS_MESH,
                 hopCount = record.hopCount,

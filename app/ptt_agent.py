@@ -103,46 +103,53 @@ def choose_task(conn, event_id, definition, actor, text):
     return by_id[0] if len(by_id) == 1 else None
 
 
-def record_incident(path, definitions, channel_id, item):
+def record_incident_in_conn(conn, definitions, channel_id, item):
     kind = incident_kind(item["text"])
     if not kind:
-        return
+        return None
     actor = item["actor"]
+    member = conn.execute("""
+        SELECT c.event_id,p.name FROM field_channels c
+        JOIN field_members m ON m.channel_id=c.id JOIN field_people p ON p.id=m.person_id
+        WHERE c.id=? AND c.kind='group' AND p.id=? AND p.role='staff'
+    """, (channel_id, actor)).fetchone()
+    if not member:
+        return None
+    event_id = member["event_id"]
+    _, definition = event_and_definition(conn, event_id, definitions)
+    track = item["track_sid"]
+    key = hashlib.sha256(dump([channel_id, track]).encode()).hexdigest()
+    message_id = "ptt-" + key[:32]
+    if conn.execute("SELECT 1 FROM messages WHERE id=?", (message_id,)).fetchone():
+        return message_id
+    task = choose_task(conn, event_id, definition, actor, item["text"])
+    ref = ref_of(task) if task else None
+    message = {"id": message_id, "created_at": stamp(), "author": actor, "speaker": member["name"],
+               "source": "qrf_exception", "request_kind": "ptt_incident", "kind": kind, "incident_label": LABELS[kind],
+               "text": item["text"][:2000], "subject_ref": ref,
+               "voice_channel_id": channel_id, "voice_track_sid": track,
+               "review_engine": dict(item).get("review_engine"),
+               "flight_mentions": sorted(flight_codes(item["text"])), "place_mentions": sorted(place_tags(item["text"]))}
+    conn.execute("INSERT INTO messages(id,event_id,data) VALUES (?,?,?)", (message_id, event_id, dump(message)))
+    if kind == "vehicle" and task and definition["binding"]["resource_type"] == "Vehicle":
+        option = next(iter(candidates(conn, event_id, task, definition)), None)
+        if option:
+            proposal = {"id": "ptt-proposal-" + key[:32], "message_id": message_id,
+                        "engine": "ptt_incident", "title": f"建议换用{option['label']}",
+                        "reason": "频道发言报告车辆故障。候选车辆通过当前可用性、容量和预留检查，等待调度员确认。",
+                        "evidence_quote": message["text"], "status": "proposed", "target_ref": ref,
+                        "expected_version": task["version"], "action_type": "replace_resource",
+                        "parameters": {"replacement_ref": option["ref"]}, "created_at": message["created_at"]}
+            conn.execute("INSERT INTO proposals(id,event_id,message_id,data) VALUES(?,?,?,?)",
+                         (proposal["id"], event_id, message_id, dump(proposal)))
+    return message_id
+
+
+def record_incident(path, definitions, channel_id, item):
+    if not incident_kind(item["text"]):
+        return
     with connect(path, write=True) as conn:
-        member = conn.execute("""
-            SELECT c.event_id,p.name FROM field_channels c
-            JOIN field_members m ON m.channel_id=c.id JOIN field_people p ON p.id=m.person_id
-            WHERE c.id=? AND c.kind='group' AND p.id=? AND p.role='staff'
-        """, (channel_id, actor)).fetchone()
-        if not member:
-            return
-        event_id = member["event_id"]
-        _, definition = event_and_definition(conn, event_id, definitions)
-        track = item["track_sid"]
-        key = hashlib.sha256(dump([channel_id, track]).encode()).hexdigest()
-        message_id = "ptt-" + key[:32]
-        if conn.execute("SELECT 1 FROM messages WHERE id=?", (message_id,)).fetchone():
-            return
-        task = choose_task(conn, event_id, definition, actor, item["text"])
-        ref = ref_of(task) if task else None
-        message = {"id": message_id, "created_at": stamp(), "author": actor, "speaker": member["name"],
-                   "source": "qrf_exception", "request_kind": "ptt_incident", "kind": kind, "incident_label": LABELS[kind],
-                   "text": item["text"][:2000], "subject_ref": ref,
-                   "voice_channel_id": channel_id, "voice_track_sid": track,
-                   "review_engine": dict(item).get("review_engine"),
-                   "flight_mentions": sorted(flight_codes(item["text"])), "place_mentions": sorted(place_tags(item["text"]))}
-        conn.execute("INSERT INTO messages(id,event_id,data) VALUES (?,?,?)", (message_id, event_id, dump(message)))
-        if kind == "vehicle" and task and definition["binding"]["resource_type"] == "Vehicle":
-            option = next(iter(candidates(conn, event_id, task, definition)), None)
-            if option:
-                proposal = {"id": "ptt-proposal-" + key[:32], "message_id": message_id,
-                            "engine": "ptt_incident", "title": f"建议换用{option['label']}",
-                            "reason": "频道发言报告车辆故障。候选车辆通过当前可用性、容量和预留检查，等待调度员确认。",
-                            "evidence_quote": message["text"], "status": "proposed", "target_ref": ref,
-                            "expected_version": task["version"], "action_type": "replace_resource",
-                            "parameters": {"replacement_ref": option["ref"]}, "created_at": message["created_at"]}
-                conn.execute("INSERT INTO proposals(id,event_id,message_id,data) VALUES(?,?,?,?)",
-                             (proposal["id"], event_id, message_id, dump(proposal)))
+        record_incident_in_conn(conn, definitions, channel_id, item)
 
 
 def channel_records(conn, event_id, channel_id):
@@ -308,4 +315,20 @@ def channel_updates(conn, event_id, channel_id, definitions, user, records=None)
     activity = [{"id": m["id"], "created_at": m["created_at"], "label": m["incident_label"],
                  "dispatched": m["id"] in sent}
                 for m in messages if m.get("request_kind") == "ptt_incident" and m.get("voice_channel_id") == channel_id]
-    return {"incidents": next_steps, "instructions": instructions, "agent_activity": activity[-24:]}
+    has_channel_msgs = (
+        True if conn.postgres else
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='field_channel_messages'").fetchone() is not None
+    )
+    channel_messages = []
+    if has_channel_msgs:
+        rows = conn.execute("""
+            SELECT id, event_id, channel_id, actor, speaker, created_at, scope, text,
+                   recipient, sealed_payload, assistance, voice_track_sid
+            FROM field_channel_messages
+            WHERE event_id=? AND channel_id=?
+              AND (recipient IS NULL OR recipient='' OR recipient=? OR actor=?)
+            ORDER BY created_at DESC, id DESC LIMIT 50
+            """, (event_id, channel_id, user["actor"], user["actor"])).fetchall()
+        channel_messages = [{**dict(r), "assistance": bool(r["assistance"])} for r in reversed(rows)]
+    return {"incidents": next_steps, "instructions": instructions, "agent_activity": activity[-24:],
+            "channel_messages": channel_messages}

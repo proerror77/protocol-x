@@ -16,7 +16,10 @@ import com.mandonothing.ops.NearbyPrivateIdentity
 import com.mandonothing.ops.NearbyRadio
 import com.mandonothing.ops.NearbyService
 import com.mandonothing.ops.NearbySettings
+import com.mandonothing.ops.comm.rns.RnsCredentialLeaseSync
+import com.mandonothing.ops.comm.rns.RnsLocalStore
 import com.mandonothing.ops.comm.rns.RnsLxmfTransportAdapter
+import com.mandonothing.ops.comm.rns.RnsResourceTransferManager
 import com.mandonothing.ops.comm.rns.RnsRuntimeConfig
 import com.mandonothing.ops.comm.rns.RnsRuntimeService
 import com.mandonothing.ops.decodeNearbyPhoto
@@ -248,6 +251,7 @@ internal class DefaultCommGateway(
     observeNearby: Boolean = context != null,
 ) : CommGateway {
     private val settings by lazy { NearbySettings(requireNotNull(context)) }
+    private val rnsStore by lazy { context?.let(::RnsLocalStore) }
     private val adapters = linkedMapOf<CommTransportKind, CommTransportAdapter>()
     private val mutableNetworkState = MutableStateFlow(CommNetworkState())
     private val mutableMessages = MutableStateFlow<List<CommMessageEnvelope>>(emptyList())
@@ -365,6 +369,7 @@ internal class DefaultCommGateway(
             NearbyService.start(appContext, config)
         }
         if (forceRestart || RnsRuntimeService.activeCoordinator == null) {
+            val ifacLease = rnsStore?.loadIfacLease(config.event, config.channel)?.takeIf { it.isLive() }
             RnsRuntimeService.start(
                 appContext,
                 RnsRuntimeConfig(
@@ -374,13 +379,17 @@ internal class DefaultCommGateway(
                     channelName = config.title,
                     actorId = config.actor.orEmpty(),
                     lxmfDisplayName = config.actor,
+                    propagationNodeHashHex = ifacLease?.gatewayDestinationHashHex,
+                    ifac = ifacLease?.toPolicy(),
+                    revokedIdentityHashes = ifacLease?.revokedDeviceHashes.orEmpty().toList(),
                 ),
             )
         }
         publishNetworkAndMessages()
     }
 
-    override fun isSessionReady(scope: CommScope?): Boolean = currentNearbySession(scope) != null
+    override fun isSessionReady(scope: CommScope?): Boolean =
+        currentNearbySession(scope) != null || rnsAdapter?.isReadyFor(scope) == true
 
     override fun unavailableReason(): String = when {
         Build.VERSION.SDK_INT < 29 -> "离线通信需要 Android 10 或更新版本"
@@ -430,16 +439,25 @@ internal class DefaultCommGateway(
     }
 
     override suspend fun markRead(scope: CommScope, messageId: String): Boolean {
-        val session = currentNearbySession(scope) ?: return false
-        return session.markRead(messageId)
+        val nearbyAck = currentNearbySession(scope)?.markRead(messageId) == true
+        val rnsAck = rnsAdapter?.acknowledgeRead(scope, messageId) == true
+        return nearbyAck || rnsAck
     }
 
     override fun markAssistanceSynced(scope: CommScope, messageId: String) {
         currentNearbySession(scope)?.syncAssistance(messageId)
+        rnsAdapter?.markSyncedToServer(messageId)
     }
 
     override fun provisionCredentials(accountKey: String, eventId: String, leases: JSONObject) {
         settings.save(accountKey, eventId, leases)
+        val store = rnsStore ?: return
+        RnsCredentialLeaseSync.applyNearbyCredentials(
+            eventId = eventId,
+            leases = leases,
+            store = store,
+            coordinator = RnsRuntimeService.activeCoordinator,
+        )
     }
 
     override fun clearCredentials(accountKey: String, eventId: String) {
@@ -448,7 +466,77 @@ internal class DefaultCommGateway(
             privateContentCache.clear()
         }
         settings.clear(accountKey, eventId)
+        rnsStore?.clearIfacLeases(eventId)
+        rnsStore?.clearIdentityBinding(accountKey, eventId)
     }
+
+    override fun rnsIdentityPayload(accountKey: String, eventId: String): JSONObject? {
+        val store = rnsStore ?: return null
+        val snap = RnsRuntimeService.snapshot.value
+        val storedId = store.loadIdentity(accountKey)
+        val savedBinding = store.loadIdentityBinding(accountKey, eventId)
+        val destHash = snap.lxmfDestinationHashHex
+            .ifBlank { snap.destinationHashHex }
+            .ifBlank { savedBinding?.rnsDestinationHashHex.orEmpty() }
+            .ifBlank { storedId?.destinationHashHex.orEmpty() }
+        if (destHash.isBlank()) return null
+        return JSONObject()
+            .put("dest_hash", destHash)
+            .put("identity_hash", snap.identityHashHex.ifBlank { storedId?.identityHashHex.orEmpty() })
+            .put("ed25519_pub", savedBinding?.ed25519PubB64.orEmpty())
+            .put("x25519_pub", savedBinding?.x25519PubB64.orEmpty())
+    }
+
+    override fun bindRnsIdentity(accountKey: String, eventId: String, actorId: String, deviceTokenHash: String) {
+        RnsRuntimeService.activeCoordinator?.bindActorIdentity(accountKey, eventId, actorId, deviceTokenHash)
+    }
+
+    override fun applyRevocations(eventId: String, payload: JSONObject) {
+        val store = rnsStore ?: return
+        RnsCredentialLeaseSync.applyRevocations(
+            eventId = eventId,
+            payload = payload,
+            store = store,
+            coordinator = RnsRuntimeService.activeCoordinator,
+        )
+    }
+
+    override fun sendAttachmentResource(
+        attachmentId: String,
+        scope: CommScope,
+        targetKind: String,
+        mediaType: String,
+        caption: String,
+        posterBytes: ByteArray,
+        contentBytes: ByteArray,
+        taskId: String,
+        durationMs: Int?,
+    ): Boolean {
+        val adapter = rnsAdapter ?: return false
+        val state = adapter.sendAttachmentResource(
+            RnsResourceTransferManager.TransferPayload(
+                attachmentId = attachmentId,
+                accountKey = scope.accountKey,
+                eventId = scope.eventId,
+                channelId = scope.channelId,
+                taskId = taskId,
+                targetKind = targetKind,
+                mediaType = mediaType,
+                caption = caption,
+                posterBytes = posterBytes,
+                contentBytes = contentBytes,
+                durationMs = durationMs,
+            ),
+            scope = scope,
+        ) ?: return false
+        return state.status != com.mandonothing.ops.comm.rns.LxmfDeliveryStatus.FAILED
+    }
+
+    override fun markEnvelopeSynced(envelopeId: String) {
+        rnsAdapter?.markSyncedToServer(envelopeId)
+    }
+
+    override fun gatewayReceipts(): SharedFlow<JSONObject>? = rnsAdapter?.gatewayReceipts
 
     override suspend fun localIdentityKeys(accountKey: String): Pair<String, String?> = withContext(Dispatchers.IO) {
         val signing = NearbyIdentity(accountKey).publicKey

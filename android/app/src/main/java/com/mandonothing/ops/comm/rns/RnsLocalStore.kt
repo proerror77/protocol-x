@@ -48,6 +48,11 @@ internal class RnsLocalStore(
     private val identityDir = File(rootDir, "identities")
     private val outboxDir = File(rootDir, "outbox")
     private val inboxDir = File(rootDir, "inbox")
+    private val ifacDir = File(rootDir, "ifac")
+    private val bindingsDir = File(rootDir, "bindings")
+    private val checkpointsDir = File(rootDir, "checkpoints")
+    private val transfersDir = File(rootDir, "transfers")
+    private val receiptsDir = File(rootDir, "read_receipts")
     private val configFile = File(rootDir, "runtime-config.dat")
     private val peersFile = File(rootDir, "peers.dat")
 
@@ -84,6 +89,13 @@ internal class RnsLocalStore(
 
     @Synchronized
     fun saveRuntimeConfig(config: RnsRuntimeConfig) {
+        val ifacObj = config.ifac?.let {
+            JSONObject()
+                .put("network_name", it.networkName)
+                .put("passphrase", it.passphrase)
+                .put("ifac_size_bytes", it.ifacSizeBytes)
+                .put("require_private_ifac", it.requirePrivateIfac)
+        }
         val json = JSONObject()
             .put("account_key", config.accountKey)
             .put("event_id", config.eventId)
@@ -96,6 +108,8 @@ internal class RnsLocalStore(
             .put("udp_peer_addr", config.udpPeerAddr)
             .put("propagation_node_hash_hex", config.propagationNodeHashHex)
             .put("enable_transport_relay", config.enableTransportRelay)
+            .put("ifac", ifacObj ?: JSONObject.NULL)
+            .put("revoked_identity_hashes", JSONArray(config.revokedIdentityHashes))
         writeEncryptedJson(configFile, "rns-runtime-config", json)
     }
 
@@ -105,6 +119,17 @@ internal class RnsLocalStore(
         return runCatching {
             val connectArray = json.optJSONArray("tcp_connect_addrs")
             val connects = List(connectArray?.length() ?: 0) { idx -> connectArray!!.getString(idx) }
+            val revokedArr = json.optJSONArray("revoked_identity_hashes")
+            val revoked = List(revokedArr?.length() ?: 0) { idx -> revokedArr!!.getString(idx) }
+            val ifacObj = json.optJSONObject("ifac")
+            val ifac = ifacObj?.let {
+                RnsIfacPolicy(
+                    networkName = it.optString("network_name"),
+                    passphrase = it.optString("passphrase"),
+                    ifacSizeBytes = it.optInt("ifac_size_bytes", 16),
+                    requirePrivateIfac = it.optBoolean("require_private_ifac", true),
+                )
+            }
             RnsRuntimeConfig(
                 accountKey = json.getString("account_key"),
                 eventId = json.getString("event_id"),
@@ -117,6 +142,8 @@ internal class RnsLocalStore(
                 udpPeerAddr = json.optString("udp_peer_addr").takeIf { it.isNotBlank() && it != "null" },
                 propagationNodeHashHex = json.optString("propagation_node_hash_hex").takeIf { it.isNotBlank() && it != "null" },
                 enableTransportRelay = json.optBoolean("enable_transport_relay"),
+                ifac = ifac,
+                revokedIdentityHashes = revoked,
             )
         }.getOrNull()
     }
@@ -206,6 +233,9 @@ internal class RnsLocalStore(
             .put("received_at_ms", record.receivedAtMs)
             .put("is_propagated", record.isPropagated)
             .put("hop_count", record.hopCount)
+            .put("read_by_names", JSONArray(record.readByNames))
+            .put("synced_to_server", record.syncedToServer)
+            .put("target_message_id", record.targetMessageId)
         writeEncryptedJson(target, "rns-inbox|${record.messageHashHex}", json)
         return true
     }
@@ -218,9 +248,13 @@ internal class RnsLocalStore(
                 val key = file.name.removeSuffix(".dat")
                 val json = readEncryptedJson(file, "rns-inbox|$key") ?: return@mapNotNull null
                 runCatching {
+                    val readArr = json.optJSONArray("read_by_names")
+                    val readers = List(readArr?.length() ?: 0) { idx -> readArr!!.getString(idx) }
+                    val envId = json.getString("envelope_id")
+                    val persistedReceipts = loadReadReceipts(envId)
                     LxmfInboundRecord(
                         messageHashHex = json.getString("message_hash_hex"),
-                        envelopeId = json.getString("envelope_id"),
+                        envelopeId = envId,
                         sourceHashHex = json.getString("source_hash_hex"),
                         destinationHashHex = json.getString("destination_hash_hex"),
                         eventId = json.getString("event_id"),
@@ -236,11 +270,299 @@ internal class RnsLocalStore(
                         receivedAtMs = json.getLong("received_at_ms"),
                         isPropagated = json.optBoolean("is_propagated"),
                         hopCount = json.optInt("hop_count", 1),
+                        readByNames = (readers + persistedReceipts).distinct(),
+                        syncedToServer = json.optBoolean("synced_to_server"),
+                        targetMessageId = json.optString("target_message_id"),
                     )
                 }.getOrNull()
             }
             .filter { (eventId == null || it.eventId == eventId) && (channelId == null || it.channelId == channelId) }
             .sortedBy { it.receivedAtMs }
+
+    @Synchronized
+    fun markInboundSyncedToServer(envelopeId: String): Boolean {
+        var updatedAny = false
+        inboxDir.listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(".dat") }
+            .forEach { file ->
+                val key = file.name.removeSuffix(".dat")
+                val json = readEncryptedJson(file, "rns-inbox|$key") ?: return@forEach
+                if (json.optString("envelope_id") == envelopeId && !json.optBoolean("synced_to_server")) {
+                    json.put("synced_to_server", true)
+                    writeEncryptedJson(file, "rns-inbox|$key", json)
+                    updatedAny = true
+                }
+            }
+        return updatedAny
+    }
+
+    @Synchronized
+    fun appendReadReceipt(targetEnvelopeId: String, readerName: String) {
+        if (targetEnvelopeId.isBlank() || readerName.isBlank()) return
+        val file = File(receiptsDir, "${safeKey(targetEnvelopeId)}.dat")
+        val current = loadReadReceipts(targetEnvelopeId).toMutableSet()
+        if (current.add(readerName)) {
+            writeEncryptedJson(file, "rns-read|$targetEnvelopeId", JSONObject().put("readers", JSONArray(current.toList())))
+        }
+    }
+
+    @Synchronized
+    fun loadReadReceipts(targetEnvelopeId: String): List<String> {
+        val file = File(receiptsDir, "${safeKey(targetEnvelopeId)}.dat")
+        val json = readEncryptedJson(file, "rns-read|$targetEnvelopeId") ?: return emptyList()
+        val arr = json.optJSONArray("readers") ?: return emptyList()
+        return List(arr.length()) { idx -> arr.optString(idx) }.filter { it.isNotBlank() }
+    }
+
+    @Synchronized
+    fun saveIfacLease(lease: RnsIfacLease) {
+        val all = loadIfacLeases(lease.eventId).associateBy { it.channelId }.toMutableMap()
+        all[lease.channelId] = lease
+        val arr = JSONArray()
+        all.values.forEach { item ->
+            arr.put(
+                JSONObject()
+                    .put("event_id", item.eventId)
+                    .put("channel_id", item.channelId)
+                    .put("network_name", item.networkName)
+                    .put("passphrase", item.passphrase)
+                    .put("ifac_size_bytes", item.ifacSizeBytes)
+                    .put("require_private_ifac", item.requirePrivateIfac)
+                    .put("generation", item.generation)
+                    .put("expires_at_ms", item.expiresAtMs)
+                    .put("gateway_dest_hash_hex", item.gatewayDestinationHashHex)
+                    .put("revoked_device_hashes", JSONArray(item.revokedDeviceHashes.toList()))
+                    .put("revoked_actors", JSONArray(item.revokedActors.toList())),
+            )
+        }
+        writeEncryptedJson(File(ifacDir, "${safeKey(lease.eventId)}.dat"), "rns-ifac|${lease.eventId}", JSONObject().put("leases", arr))
+    }
+
+    @Synchronized
+    fun loadIfacLease(eventId: String, channelId: String): RnsIfacLease? =
+        loadIfacLeases(eventId).firstOrNull { it.channelId == channelId }
+
+    @Synchronized
+    fun loadIfacLeases(eventId: String): List<RnsIfacLease> {
+        val json = readEncryptedJson(File(ifacDir, "${safeKey(eventId)}.dat"), "rns-ifac|$eventId") ?: return emptyList()
+        val arr = json.optJSONArray("leases") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { idx ->
+            runCatching {
+                val obj = arr.getJSONObject(idx)
+                val revDevArr = obj.optJSONArray("revoked_device_hashes")
+                val revActArr = obj.optJSONArray("revoked_actors")
+                RnsIfacLease(
+                    eventId = obj.getString("event_id"),
+                    channelId = obj.getString("channel_id"),
+                    networkName = obj.getString("network_name"),
+                    passphrase = obj.getString("passphrase"),
+                    ifacSizeBytes = obj.optInt("ifac_size_bytes", 16),
+                    requirePrivateIfac = obj.optBoolean("require_private_ifac", true),
+                    generation = obj.optString("generation"),
+                    expiresAtMs = obj.getLong("expires_at_ms"),
+                    gatewayDestinationHashHex = obj.optString("gateway_dest_hash_hex").takeIf { it.isNotBlank() && it != "null" },
+                    revokedDeviceHashes = List(revDevArr?.length() ?: 0) { revDevArr!!.getString(it) }.toSet(),
+                    revokedActors = List(revActArr?.length() ?: 0) { revActArr!!.getString(it) }.toSet(),
+                )
+            }.getOrNull()
+        }
+    }
+
+    @Synchronized
+    fun revokeInEvent(eventId: String, deviceHash: String? = null, actorId: String? = null) {
+        val leases = loadIfacLeases(eventId)
+        if (leases.isEmpty()) return
+        leases.forEach { lease ->
+            saveIfacLease(
+                lease.copy(
+                    revokedDeviceHashes = if (!deviceHash.isNullOrBlank()) lease.revokedDeviceHashes + deviceHash.lowercase() else lease.revokedDeviceHashes,
+                    revokedActors = if (!actorId.isNullOrBlank()) lease.revokedActors + actorId else lease.revokedActors,
+                ),
+            )
+        }
+    }
+
+    @Synchronized
+    fun clearIfacLeases(eventId: String) {
+        File(ifacDir, "${safeKey(eventId)}.dat").delete()
+    }
+
+    @Synchronized
+    fun saveIdentityBinding(binding: RnsIdentityBinding) {
+        val key = "${binding.accountKey}|${binding.eventId}"
+        val json = JSONObject()
+            .put("account_key", binding.accountKey)
+            .put("event_id", binding.eventId)
+            .put("actor_id", binding.actorId)
+            .put("device_token_hash", binding.deviceTokenHash)
+            .put("rns_identity_hash_hex", binding.rnsIdentityHashHex)
+            .put("rns_destination_hash_hex", binding.rnsDestinationHashHex)
+            .put("lxmf_destination_hash_hex", binding.lxmfDestinationHashHex)
+            .put("ed25519_pub_b64", binding.ed25519PubB64)
+            .put("x25519_pub_b64", binding.x25519PubB64)
+            .put("ed25519_pub_hex", binding.ed25519PubHex)
+            .put("binding_digest_hex", binding.bindingDigestHex)
+            .put("bound_at_ms", binding.boundAtMs)
+        writeEncryptedJson(File(bindingsDir, "${safeKey(key)}.dat"), "rns-binding|$key", json)
+    }
+
+    @Synchronized
+    fun loadIdentityBinding(accountKey: String, eventId: String): RnsIdentityBinding? {
+        val key = "$accountKey|$eventId"
+        val json = readEncryptedJson(File(bindingsDir, "${safeKey(key)}.dat"), "rns-binding|$key") ?: return null
+        return runCatching {
+            RnsIdentityBinding(
+                accountKey = json.getString("account_key"),
+                eventId = json.getString("event_id"),
+                actorId = json.getString("actor_id"),
+                deviceTokenHash = json.getString("device_token_hash"),
+                rnsIdentityHashHex = json.getString("rns_identity_hash_hex"),
+                rnsDestinationHashHex = json.getString("rns_destination_hash_hex"),
+                lxmfDestinationHashHex = json.optString("lxmf_destination_hash_hex"),
+                ed25519PubB64 = json.optString("ed25519_pub_b64"),
+                x25519PubB64 = json.optString("x25519_pub_b64"),
+                ed25519PubHex = json.optString("ed25519_pub_hex"),
+                bindingDigestHex = json.optString("binding_digest_hex"),
+                boundAtMs = json.optLong("bound_at_ms"),
+            )
+        }.getOrNull()
+    }
+
+    @Synchronized
+    fun clearIdentityBinding(accountKey: String, eventId: String) {
+        val key = "$accountKey|$eventId"
+        File(bindingsDir, "${safeKey(key)}.dat").delete()
+    }
+
+    @Synchronized
+    fun saveSyncCheckpoints(checkpoints: RnsSyncCheckpoints) {
+        val key = "${checkpoints.accountKey}|${checkpoints.eventId}"
+        val cursorsObj = JSONObject()
+        checkpoints.channelCursors.forEach { (ch, cur) -> cursorsObj.put(ch, cur) }
+        val json = JSONObject()
+            .put("account_key", checkpoints.accountKey)
+            .put("event_id", checkpoints.eventId)
+            .put("workspace_revision", checkpoints.workspaceRevision)
+            .put("channel_cursors", cursorsObj)
+            .put("flight_notice_seq", checkpoints.flightNoticeSeq)
+            .put("updated_at_ms", checkpoints.updatedAtMs)
+        writeEncryptedJson(File(checkpointsDir, "${safeKey(key)}.dat"), "rns-checkpoints|$key", json)
+    }
+
+    @Synchronized
+    fun loadSyncCheckpoints(accountKey: String, eventId: String): RnsSyncCheckpoints? {
+        val key = "$accountKey|$eventId"
+        val json = readEncryptedJson(File(checkpointsDir, "${safeKey(key)}.dat"), "rns-checkpoints|$key") ?: return null
+        return runCatching {
+            val cursorsObj = json.optJSONObject("channel_cursors")
+            val cursors = buildMap {
+                cursorsObj?.keys()?.forEach { k -> put(k, cursorsObj.optString(k)) }
+            }
+            RnsSyncCheckpoints(
+                accountKey = json.getString("account_key"),
+                eventId = json.getString("event_id"),
+                workspaceRevision = json.optString("workspace_revision").takeIf { it.isNotBlank() && it != "null" },
+                channelCursors = cursors,
+                flightNoticeSeq = json.optLong("flight_notice_seq", 0L),
+                updatedAtMs = json.optLong("updated_at_ms", 0L),
+            )
+        }.getOrNull()
+    }
+
+    @Synchronized
+    fun saveResourceTransfer(state: RnsAttachmentTransferState) {
+        val json = JSONObject()
+            .put("attachment_id", state.attachmentId)
+            .put("account_key", state.accountKey)
+            .put("event_id", state.eventId)
+            .put("channel_id", state.channelId)
+            .put("task_id", state.taskId)
+            .put("target_kind", state.targetKind)
+            .put("media_type", state.mediaType)
+            .put("caption", state.caption)
+            .put("total_bytes", state.totalBytes)
+            .put("poster_bytes", state.posterBytes)
+            .put("duration_ms", state.durationMs ?: JSONObject.NULL)
+            .put("sha256_content", state.sha256Content)
+            .put("sha256_combined", state.sha256Combined)
+            .put("chunk_size", state.chunkSize)
+            .put("chunk_count", state.chunkCount)
+            .put("acked_chunks", JSONArray(state.ackedChunks.sorted()))
+            .put("status", state.status.name)
+            .put("synced_to_server", state.syncedToServer)
+            .put("updated_at_ms", state.updatedAtMs)
+        writeEncryptedJson(
+            File(transfersDir, "${safeKey(state.attachmentId)}.dat"),
+            "rns-transfer|${state.attachmentId}",
+            json,
+        )
+    }
+
+    @Synchronized
+    fun loadResourceTransfer(attachmentId: String): RnsAttachmentTransferState? {
+        val json = readEncryptedJson(
+            File(transfersDir, "${safeKey(attachmentId)}.dat"),
+            "rns-transfer|$attachmentId",
+        ) ?: return null
+        return parseTransferJson(json)
+    }
+
+    @Synchronized
+    fun allResourceTransfers(eventId: String? = null, channelId: String? = null): List<RnsAttachmentTransferState> =
+        transfersDir.listFiles().orEmpty()
+            .filter { it.isFile && it.name.endsWith(".dat") }
+            .mapNotNull { file ->
+                val id = file.name.removeSuffix(".dat")
+                readEncryptedJson(file, "rns-transfer|$id")?.let(::parseTransferJson)
+            }
+            .filter { (eventId == null || it.eventId == eventId) && (channelId == null || it.channelId == channelId) }
+            .sortedBy { it.updatedAtMs }
+
+    @Synchronized
+    fun saveInboundChunk(attachmentId: String, chunkIndex: Int, data: ByteArray) {
+        val dir = File(transfersDir, "chunks-${safeKey(attachmentId)}")
+        check(dir.isDirectory || dir.mkdirs())
+        val encrypted = cipher.encrypt(data, "rns-chunk|$attachmentId|$chunkIndex")
+        File(dir, "$chunkIndex.bin").writeBytes(encrypted)
+    }
+
+    @Synchronized
+    fun loadInboundChunk(attachmentId: String, chunkIndex: Int): ByteArray? {
+        val file = File(File(transfersDir, "chunks-${safeKey(attachmentId)}"), "$chunkIndex.bin")
+        if (!file.isFile) return null
+        return runCatching { cipher.decrypt(file.readBytes(), "rns-chunk|$attachmentId|$chunkIndex") }.getOrNull()
+    }
+
+    @Synchronized
+    fun clearInboundChunks(attachmentId: String) {
+        File(transfersDir, "chunks-${safeKey(attachmentId)}").deleteRecursively()
+    }
+
+    private fun parseTransferJson(json: JSONObject): RnsAttachmentTransferState? = runCatching {
+        val ackArr = json.optJSONArray("acked_chunks")
+        val acked = List(ackArr?.length() ?: 0) { ackArr!!.getInt(it) }.toSet()
+        RnsAttachmentTransferState(
+            attachmentId = json.getString("attachment_id"),
+            accountKey = json.optString("account_key"),
+            eventId = json.getString("event_id"),
+            channelId = json.optString("channel_id"),
+            taskId = json.optString("task_id"),
+            targetKind = json.getString("target_kind"),
+            mediaType = json.getString("media_type"),
+            caption = json.optString("caption"),
+            totalBytes = json.getLong("total_bytes"),
+            posterBytes = json.optInt("poster_bytes", 0),
+            durationMs = if (json.isNull("duration_ms")) null else json.optInt("duration_ms"),
+            sha256Content = json.getString("sha256_content"),
+            sha256Combined = json.getString("sha256_combined"),
+            chunkSize = json.optInt("chunk_size", 16_384),
+            chunkCount = json.getInt("chunk_count"),
+            ackedChunks = acked,
+            status = LxmfDeliveryStatus.valueOf(json.optString("status", LxmfDeliveryStatus.QUEUED.name)),
+            syncedToServer = json.optBoolean("synced_to_server"),
+            updatedAtMs = json.optLong("updated_at_ms"),
+        )
+    }.getOrNull()
 
     @Synchronized
     fun upsertPeer(peer: RnsPeerRecord) {

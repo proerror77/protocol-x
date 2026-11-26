@@ -187,6 +187,9 @@ class Field:
             AND NOT EXISTS (SELECT 1 FROM field_members m WHERE m.channel_id=c.id AND m.person_id=d.person_id)
             ON CONFLICT(session_id) DO NOTHING
             """, (event_id,))
+        from .field_nearby import rotate_revoked_channels
+
+        rotate_revoked_channels(conn, event_id=event_id, reason="access_changed")
 
     @staticmethod
     def roster_access(conn, event_id, actor):
@@ -269,6 +272,9 @@ class Field:
                      (at, row["id"]))
         token = "pxd-" + secrets.token_urlsafe(32)
         conn.execute("INSERT INTO field_devices VALUES (?,?,?,NULL)", (digest(token), row["id"], expiry(7*24*60)))
+        from .field_nearby import rotate_revoked_channels
+
+        rotate_revoked_channels(conn, person_id=row["id"], reason="session_replaced")
         return JSONResponse({"session_token": token, "identity": self.person(row)}, headers={"Cache-Control": "no-store"})
 
     @staticmethod
@@ -502,6 +508,9 @@ class Field:
                 at = stamp()
                 conn.execute("UPDATE field_invites SET used_at=? WHERE person_id=? AND used_at IS NULL", (at, person_id))
                 conn.execute("UPDATE field_devices SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL", (at, person_id))
+                from .field_nearby import rotate_revoked_channels
+
+                rotate_revoked_channels(conn, person_id=person_id, reason="device_revoked")
             return {"status": "revoked"}
 
         @app.post("/api/field/events/{event_id}/people/{person_id}/account-status")
@@ -525,6 +534,9 @@ class Field:
                     conn.execute("UPDATE field_invites SET used_at=? WHERE person_id=? AND used_at IS NULL", (at, person_id))
                     conn.execute("UPDATE field_devices SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL", (at, person_id))
                     conn.execute("DELETE FROM field_passkeys WHERE person_id=?", (person_id,))
+                    from .field_nearby import rotate_revoked_channels
+
+                    rotate_revoked_channels(conn, person_id=person_id, reason="account_suspended")
                 else:
                     conn.execute("DELETE FROM field_suspensions WHERE person_id=?", (person_id,))
             return {"login_status": "suspended" if body.suspended else "active"}
@@ -555,6 +567,9 @@ class Field:
             self.require_person(user)
             with store.connect(write=True) as conn:
                 conn.execute("UPDATE field_devices SET revoked_at=? WHERE token_hash=?", (stamp(), user["device"]))
+                from .field_nearby import rotate_revoked_channels
+
+                rotate_revoked_channels(conn, token_hash=user["device"], reason="logout")
             return {"status": "revoked"}
 
         @app.post("/api/field/events/{event_id}/direct")
