@@ -34,6 +34,13 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
+import com.mandonothing.ops.comm.aware.AndroidConnectivityDriver
+import com.mandonothing.ops.comm.aware.PeerCapacityManager
+import com.mandonothing.ops.comm.aware.RnsLinkConfig
+import com.mandonothing.ops.comm.aware.RnsRadioKind
+import com.mandonothing.ops.comm.aware.TrackedNetworkCallbackRegistry
+import com.mandonothing.ops.comm.aware.TrackedSocketRegistry
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -43,6 +50,8 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.ByteBuffer
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 internal fun nearbyPermissions(context: Context): List<String> = buildList {
@@ -59,6 +68,12 @@ internal fun nearbyPermissions(context: Context): List<String> = buildList {
 
 internal enum class NearbyRadio { WIFI, BLE }
 
+/** Pluggable local radio link channel (Wi-Fi Aware or BLE L2CAP; RNS-04 adds RNS Wi-Fi Aware). */
+internal interface NearbyRadioChannel : Closeable {
+    val radio: NearbyRadio
+    fun start()
+}
+
 internal class NearbyRadios(
     private val context: Context,
     private val messages: NearbyMessages,
@@ -67,15 +82,17 @@ internal class NearbyRadios(
     private val liveVoice: NearbyLiveVoice? = null,
     private val voiceAuth: NearbyVoiceAuthentication? = null,
     private val onDiagnostics: (NearbyDiagnosticSnapshot) -> Unit = {},
+    private val linkConfig: RnsLinkConfig = RnsLinkConfig(),
     private val onStatus: (NearbyRadio, Boolean, Boolean) -> Unit,
 ) : Closeable {
     private val main = Handler(Looper.getMainLooper())
+    private val callbackToken = Any()
     private val executor = Executors.newCachedThreadPool()
-    private val sockets = mutableSetOf<Closeable>()
+    private val sockets = Collections.newSetFromMap(ConcurrentHashMap<Closeable, Boolean>())
     private val diagnostics = NearbyLinkDiagnostics()
-    private var closed = false
-    private var wifi: Aware? = null
-    private var ble: Ble? = null
+    @Volatile private var closed = false
+    private var wifi: NearbyRadioChannel? = null
+    private var ble: NearbyRadioChannel? = null
 
     private fun allowed(permission: String) = context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
@@ -178,8 +195,9 @@ internal class NearbyRadios(
     private fun writeFrame(output: DataOutputStream, radio: NearbyRadio, initiator: Boolean,
                            inventory: Set<String>, peerLive: Boolean) {
         val wifi = radio == NearbyRadio.WIFI
-        val supportsLive = wifi && messages.voiceEnabled && liveVoice != null && voiceAuth != null
-        val live = if (supportsLive && peerLive) liveVoice?.outbound().orEmpty() else emptyList()
+        val activeLiveVoice = liveVoice
+        val supportsLive = wifi && messages.voiceEnabled && activeLiveVoice != null && voiceAuth != null
+        val live = if (supportsLive && peerLive) activeLiveVoice.outbound() else emptyList()
         val frame = messages.makeFrame(wifi, initiator, inventory, live, supportsLive)
         output.writeNearby(frame.data)
         messages.frameSent(frame.ownMessageIds, radio)
@@ -187,6 +205,7 @@ internal class NearbyRadios(
 
     override fun close() {
         closed = true
+        main.removeCallbacksAndMessages(callbackToken)
         wifi?.close()
         ble?.close()
         sockets.forEach { runCatching { it.close() } }
@@ -195,25 +214,48 @@ internal class NearbyRadios(
     }
 
     @SuppressLint("MissingPermission")
-    private inner class Aware(private val manager: WifiAwareManager) : Closeable {
+    private inner class Aware(private val manager: WifiAwareManager) : NearbyRadioChannel {
+        override val radio: NearbyRadio = NearbyRadio.WIFI
         private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        private val callbackRegistry = connectivity?.let {
+            TrackedNetworkCallbackRegistry<PeerHandle, NetworkRequest, ConnectivityManager.NetworkCallback>(
+                AndroidConnectivityDriver(it),
+            )
+        }
+        private val socketRegistry = TrackedSocketRegistry<PeerHandle>()
+        private val capacity = PeerCapacityManager(RnsRadioKind.WIFI_AWARE, linkConfig)
         private var session: WifiAwareSession? = null
-        private var active = true
+        @Volatile private var active = true
         private val localId = ByteBuffer.allocate(4).putInt(messages.device).array()
-        private val requests = mutableMapOf<PeerHandle, ConnectivityManager.NetworkCallback>()
         private val discoveryPeers = mutableMapOf<PeerHandle, SubscribeDiscoverySession>()
         private val helloPending = mutableSetOf<PeerHandle>()
-        private val listeners = mutableMapOf<PeerHandle, ServerSocket>()
         private val connections = mutableMapOf<PeerHandle, Socket>()
         private var sequence = 0
 
-        fun start() {
+        private fun peerKey(peer: PeerHandle): String = "aware:${peer.hashCode()}"
+
+        private val maintenance = object : Runnable {
+            override fun run() {
+                if (!active) return
+                val actions = capacity.pruneAndRotate(SystemClock.elapsedRealtime())
+                actions.evictPeers.forEach { id ->
+                    discoveryPeers.keys.firstOrNull { peerKey(it) == id }?.let(::drop)
+                }
+                actions.admitPeers.forEach { id ->
+                    discoveryPeers.keys.firstOrNull { peerKey(it) == id }?.let(::hello)
+                }
+                main.postDelayed(this, callbackToken, linkConfig.probeIntervalMs)
+            }
+        }
+
+        override fun start() {
             runCatching {
                 manager.attach(object : AttachCallback() {
                     override fun onAttached(attached: WifiAwareSession) {
                         if (!active) { attached.close(); return }
                         session = attached
                         onStatus(NearbyRadio.WIFI, true, false)
+                        main.postDelayed(maintenance, callbackToken, linkConfig.probeIntervalMs)
                         runCatching { discover(attached) }.onFailure { restart() }
                     }
 
@@ -232,19 +274,37 @@ internal class NearbyRadios(
                     override fun onSessionTerminated() = restart()
                     override fun onMessageReceived(peer: PeerHandle, payload: ByteArray) {
                         val discovery = publisher ?: return
-                        if (!active || !payload.contentEquals(HELLO) || peer in requests || requests.size >= MAX_LINKS) return
-                        val server = runCatching { ServerSocket(0).apply { soTimeout = 15_000 } }.getOrNull() ?: return
-                        listeners[peer] = server
+                        if (!active || !payload.contentEquals(HELLO) || callbackRegistry?.contains(peer) == true) return
+                        val now = SystemClock.elapsedRealtime()
+                        capacity.onPeerDiscovered(peerKey(peer), nowMs = now)
+                        if (!admitPeer(peer, now)) return
+                        val server = runCatching { ServerSocket(0).apply { soTimeout = 15_000 } }.getOrNull()
+                        if (server == null) {
+                            drop(peer, failed = true)
+                            return
+                        }
+                        if (!socketRegistry.register(peer, server)) {
+                            drop(peer, failed = true)
+                            return
+                        }
                         request(discovery, peer, server.localPort)
                         runCatching { discovery.sendMessage(peer, sequence++, READY) }
                         executor.execute {
                             val socket = runCatching { server.accept() }.getOrNull()
-                            runCatching { server.close() }
+                            socketRegistry.closeResource(peer, server)
+                            if (socket == null) {
+                                main.post { if (active && callbackRegistry?.contains(peer) == true) drop(peer, failed = true) }
+                                return@execute
+                            }
+                            if (!active || !socket.inetAddress.isLinkLocalAddress || !socketRegistry.register(peer, socket)) {
+                                runCatching { socket.close() }
+                                main.post { if (active) drop(peer, failed = true) }
+                                return@execute
+                            }
                             main.post {
-                                listeners.remove(peer)
-                                if (!active || peer !in requests || socket == null || !socket.inetAddress.isLinkLocalAddress) {
-                                    runCatching { socket?.close() }
-                                    drop(peer)
+                                if (!active || callbackRegistry?.contains(peer) != true) {
+                                    socketRegistry.closeResource(peer, socket)
+                                    drop(peer, failed = false)
                                 } else connect(peer, socket, false)
                             }
                         }
@@ -261,34 +321,60 @@ internal class NearbyRadios(
                         if (!active || info.size != 4 ||
                             Integer.compareUnsigned(messages.device, ByteBuffer.wrap(info).int) >= 0) return
                         discoveryPeers[peer] = discovery
+                        capacity.onPeerDiscovered(peerKey(peer), nowMs = SystemClock.elapsedRealtime())
                         hello(peer)
                     }
 
                     override fun onMessageReceived(peer: PeerHandle, payload: ByteArray) {
                         val discovery = subscriber ?: return
-                        if (active && peer in discoveryPeers && payload.contentEquals(READY) && peer !in requests &&
-                            requests.size < MAX_LINKS) request(discovery, peer, null)
+                        if (!active || peer !in discoveryPeers || !payload.contentEquals(READY)) return
+                        if (callbackRegistry?.contains(peer) == true) return
+                        val now = SystemClock.elapsedRealtime()
+                        if (admitPeer(peer, now)) request(discovery, peer, null)
                     }
 
                     override fun onServiceLost(peer: PeerHandle, reason: Int) {
                         discoveryPeers.remove(peer)
                         helloPending.remove(peer)
-                        drop(peer)
+                        capacity.removePeer(peerKey(peer))
+                        drop(peer, failed = false)
                     }
                 }, main)
         }
 
+        private fun admitPeer(peer: PeerHandle, now: Long): Boolean {
+            return when (val decision = capacity.evaluateAdmission(peerKey(peer), now)) {
+                is PeerCapacityManager.AdmissionDecision.Admitted -> true
+                is PeerCapacityManager.AdmissionDecision.PreemptedAndAdmitted -> {
+                    discoveryPeers.keys.firstOrNull { peerKey(it) == decision.evictedPeerId }?.let { drop(it, failed = false) }
+                    true
+                }
+                is PeerCapacityManager.AdmissionDecision.RotatedAndAdmitted -> {
+                    discoveryPeers.keys.firstOrNull { peerKey(it) == decision.rotatedOutPeerId }?.let { drop(it, failed = false) }
+                    true
+                }
+                is PeerCapacityManager.AdmissionDecision.QueuedStandby,
+                is PeerCapacityManager.AdmissionDecision.Suppressed -> false
+            }
+        }
+
         private fun hello(peer: PeerHandle) {
             val discovery = discoveryPeers[peer] ?: return
-            if (!active || peer in requests || requests.size >= MAX_LINKS || !helloPending.add(peer)) return
+            if (!active || callbackRegistry?.contains(peer) == true || !helloPending.add(peer)) return
+            val now = SystemClock.elapsedRealtime()
+            if (!admitPeer(peer, now)) {
+                helloPending.remove(peer)
+                return
+            }
             runCatching { discovery.sendMessage(peer, sequence++, HELLO) }
             main.postDelayed({
                 helloPending.remove(peer)
                 hello(peer)
-            }, 6_000)
+            }, callbackToken, 6_000)
         }
 
         private fun request(discovery: DiscoverySession, peer: PeerHandle, port: Int?) {
+            val registry = callbackRegistry ?: run { drop(peer, failed = true); return }
             runCatching {
                 val builder = WifiAwareNetworkSpecifier.Builder(discovery, peer).setPskPassphrase(messages.group.wifiPassword)
                 if (port != null) builder.setPort(port)
@@ -302,7 +388,7 @@ internal class NearbyRadios(
                         val address = info.peerIpv6Addr ?: return
                         if (info.port <= 0) return
                         main.post {
-                            if (!active || connecting || requests[peer] !== this) return@post
+                            if (!active || connecting || !registry.isCurrent(peer, this)) return@post
                             connecting = true
                             executor.execute {
                                 val socket = runCatching {
@@ -311,21 +397,31 @@ internal class NearbyRadios(
                                         catch (error: Exception) { close(); throw error }
                                     }
                                 }.getOrNull()
+                                if (socket == null) {
+                                    main.post { if (registry.isCurrent(peer, this)) drop(peer, failed = true) }
+                                    return@execute
+                                }
+                                if (!active || !socketRegistry.register(peer, socket)) {
+                                    runCatching { socket.close() }
+                                    main.post { if (registry.isCurrent(peer, this)) drop(peer, failed = true) }
+                                    return@execute
+                                }
                                 main.post {
-                                    if (!active || requests[peer] !== this || socket == null) {
-                                        runCatching { socket?.close() }
-                                        if (requests[peer] === this) drop(peer)
+                                    if (!active || !registry.isCurrent(peer, this)) {
+                                        socketRegistry.closeResource(peer, socket)
+                                        if (registry.isCurrent(peer, this)) drop(peer, failed = true)
                                     } else connect(peer, socket, true)
                                 }
                             }
                         }
                     }
-                    override fun onUnavailable() { main.post { if (requests[peer] === this) drop(peer) } }
-                    override fun onLost(network: Network) { main.post { if (requests[peer] === this) drop(peer) } }
+                    override fun onUnavailable() { main.post { if (registry.isCurrent(peer, this)) drop(peer, failed = true) } }
+                    override fun onLost(network: Network) { main.post { if (registry.isCurrent(peer, this)) drop(peer, failed = false) } }
                 }
-                requests[peer] = callback
-                connectivity.requestNetwork(request, callback, 12_000)
-            }.onFailure { drop(peer) }
+                if (!registry.register(peer, request, callback, linkConfig.ndpRequestTimeoutMs)) {
+                    drop(peer, failed = true)
+                }
+            }.onFailure { drop(peer, failed = true) }
         }
 
         private fun connect(peer: PeerHandle, socket: Socket, initiator: Boolean) {
@@ -333,20 +429,24 @@ internal class NearbyRadios(
                 socket.tcpNoDelay = true
                 socket.soTimeout = 10_000
                 connections[peer] = socket
+                capacity.markConnected(peerKey(peer), SystemClock.elapsedRealtime())
                 exchange(socket, socket.getInputStream(), socket.getOutputStream(), NearbyRadio.WIFI, initiator) {
-                    if (connections[peer] === socket) drop(peer)
+                    if (connections[peer] === socket) drop(peer, failed = false)
                 }
-            }.onFailure { runCatching { socket.close() }; drop(peer) }
+            }.onFailure {
+                socketRegistry.closeResource(peer, socket)
+                drop(peer, failed = true)
+            }
         }
 
-        private fun drop(peer: PeerHandle) {
-            val callback = requests.remove(peer)
-            if (callback != null) runCatching { connectivity.unregisterNetworkCallback(callback) }
-            runCatching { listeners.remove(peer)?.close() }
-            runCatching { connections.remove(peer)?.close() }
+        private fun drop(peer: PeerHandle, failed: Boolean = false) {
+            callbackRegistry?.unregister(peer)
+            socketRegistry.closeKey(peer)
+            connections.remove(peer)
+            capacity.markDisconnected(peerKey(peer), failed, SystemClock.elapsedRealtime())
             if (active) {
                 if (connections.isEmpty()) onStatus(NearbyRadio.WIFI, true, false)
-                main.postDelayed({ discoveryPeers.keys.toList().forEach(::hello) }, 2_000)
+                main.postDelayed({ discoveryPeers.keys.toList().forEach(::hello) }, callbackToken, 2_000)
             }
         }
 
@@ -355,31 +455,35 @@ internal class NearbyRadios(
             close()
             wifi = null
             onStatus(NearbyRadio.WIFI, false, false)
-            main.postDelayed({ refresh() }, 2_000)
+            main.postDelayed({ refresh() }, callbackToken, 2_000)
         }
 
         override fun close() {
             active = false
-            requests.values.forEach { runCatching { connectivity.unregisterNetworkCallback(it) } }
-            requests.clear()
-            listeners.values.forEach { runCatching { it.close() } }
-            listeners.clear()
-            connections.values.forEach { runCatching { it.close() } }
+            main.removeCallbacks(maintenance)
+            callbackRegistry?.unregisterAll(permanent = true)
+            socketRegistry.closeAll(permanent = true)
             connections.clear()
+            discoveryPeers.clear()
+            helloPending.clear()
+            capacity.clear()
             session?.close()
             session = null
         }
     }
 
     @SuppressLint("MissingPermission")
-    private inner class Ble : Closeable {
+    private inner class Ble : NearbyRadioChannel {
+        override val radio: NearbyRadio = NearbyRadio.BLE
         private val adapter = context.getSystemService(BluetoothManager::class.java).adapter
         private val service = ParcelUuid(messages.group.radioUuid)
         private val scanner = adapter.bluetoothLeScanner
         private val advertiser = adapter.bluetoothLeAdvertiser
+        private val socketRegistry = TrackedSocketRegistry<Int>()
+        private val capacity = PeerCapacityManager(RnsRadioKind.BLE_L2CAP, linkConfig)
         private val links = mutableMapOf<Int, BluetoothSocket>()
         private val inbound = mutableSetOf<BluetoothSocket>()
-        private var active = true
+        @Volatile private var active = true
         private var listener: android.bluetooth.BluetoothServerSocket? = null
         private val advertising = object : AdvertiseCallback() {
             override fun onStartFailure(errorCode: Int) { restart() }
@@ -387,23 +491,42 @@ internal class NearbyRadios(
         private val scanning = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val data = result.scanRecord?.getServiceData(service) ?: return
-                if (!active || data.size != 6 || links.size >= MAX_LINKS) return
+                if (!active || data.size != 6) return
                 val reader = ByteBuffer.wrap(data)
                 val node = reader.int
                 val psm = reader.short.toInt() and 0xffff
                 if (psm == 0 || node == messages.device || node in links) return
                 // One connection per pair. Either device may accept links while initiating others.
                 if (Integer.compareUnsigned(messages.device, node) >= 0) return
+                val now = SystemClock.elapsedRealtime()
+                val peerId = "ble:$node"
+                capacity.onPeerDiscovered(peerId, rssiDbm = result.rssi, nowMs = now)
+                when (val decision = capacity.evaluateAdmission(peerId, now)) {
+                    is PeerCapacityManager.AdmissionDecision.Admitted -> Unit
+                    is PeerCapacityManager.AdmissionDecision.PreemptedAndAdmitted ->
+                        evictNodeByPeerId(decision.evictedPeerId)
+                    is PeerCapacityManager.AdmissionDecision.RotatedAndAdmitted ->
+                        evictNodeByPeerId(decision.rotatedOutPeerId)
+                    is PeerCapacityManager.AdmissionDecision.QueuedStandby,
+                    is PeerCapacityManager.AdmissionDecision.Suppressed -> return
+                }
                 connect(result.device, node, psm)
             }
 
             override fun onScanFailed(errorCode: Int) { restart() }
         }
 
-        fun start() {
+        private fun evictNodeByPeerId(peerId: String) {
+            val node = peerId.removePrefix("ble:").toIntOrNull() ?: return
+            links.remove(node)?.let { socketRegistry.closeResource(node, it) }
+            capacity.markDisconnected(peerId, failed = false, nowMs = SystemClock.elapsedRealtime())
+        }
+
+        override fun start() {
             runCatching {
                 val server = adapter.listenUsingInsecureL2capChannel()
                 listener = server
+                if (!socketRegistry.registerUnkeyed(server)) return
                 check(advertiser != null && scanner != null)
                 val bytes = ByteBuffer.allocate(6).putInt(messages.device).putShort(server.psm.toShort()).array()
                 advertiser.startAdvertising(AdvertiseSettings.Builder()
@@ -415,12 +538,18 @@ internal class NearbyRadios(
                 executor.execute {
                     while (!Thread.currentThread().isInterrupted) {
                         val accepted = runCatching { server.accept() }.getOrNull() ?: break
+                        if (!active || !socketRegistry.registerUnkeyed(accepted)) {
+                            runCatching { accepted.close() }
+                            continue
+                        }
                         main.post {
-                            if (!active || inbound.size >= MAX_LINKS) runCatching { accepted.close() }
-                            else {
+                            if (!active || inbound.size >= linkConfig.maxActiveBleLinks) {
+                                socketRegistry.closeUnkeyed(accepted)
+                            } else {
                                 inbound.add(accepted)
                                 connectSocket(accepted, false) {
                                     inbound.remove(accepted)
+                                    socketRegistry.closeUnkeyed(accepted)
                                     if (links.isEmpty() && inbound.isEmpty()) onStatus(NearbyRadio.BLE, true, false)
                                 }
                             }
@@ -432,19 +561,28 @@ internal class NearbyRadios(
 
         private fun connect(device: BluetoothDevice, node: Int, psm: Int) {
             val socket = runCatching { device.createInsecureL2capChannel(psm) }.getOrNull() ?: return
+            if (!socketRegistry.replace(node, socket)) return
             links[node] = socket
-            val timeout = Runnable { runCatching { socket.close() } }
-            main.postDelayed(timeout, 8_000)
+            val timeout = Runnable { socketRegistry.closeResource(node, socket) }
+            main.postDelayed(timeout, callbackToken, 8_000)
             executor.execute {
                 val ok = runCatching { socket.connect() }.isSuccess
+                if (!active || !ok) {
+                    socketRegistry.closeResource(node, socket)
+                }
                 main.post {
                     main.removeCallbacks(timeout)
                     if (!active || !ok) {
-                        runCatching { socket.close() }
                         links.remove(node)
-                    } else connectSocket(socket, true) {
-                        links.remove(node)
-                        if (links.isEmpty() && inbound.isEmpty()) onStatus(NearbyRadio.BLE, true, false)
+                        capacity.markDisconnected("ble:$node", failed = !ok, nowMs = SystemClock.elapsedRealtime())
+                    } else {
+                        capacity.markConnected("ble:$node", SystemClock.elapsedRealtime())
+                        connectSocket(socket, true) {
+                            links.remove(node)
+                            socketRegistry.closeResource(node, socket)
+                            capacity.markDisconnected("ble:$node", failed = false, nowMs = SystemClock.elapsedRealtime())
+                            if (links.isEmpty() && inbound.isEmpty()) onStatus(NearbyRadio.BLE, true, false)
+                        }
                     }
                 }
             }
@@ -460,24 +598,23 @@ internal class NearbyRadios(
             close()
             ble = null
             onStatus(NearbyRadio.BLE, false, false)
-            main.postDelayed({ refresh() }, 3_000)
+            main.postDelayed({ refresh() }, callbackToken, 3_000)
         }
 
         override fun close() {
             active = false
             runCatching { scanner?.stopScan(scanning) }
             runCatching { advertiser?.stopAdvertising(advertising) }
-            runCatching { listener?.close() }
-            links.values.forEach { runCatching { it.close() } }
-            inbound.forEach { runCatching { it.close() } }
+            socketRegistry.closeAll(permanent = true)
+            listener = null
             links.clear()
             inbound.clear()
+            capacity.clear()
         }
     }
 
     private companion object {
         val HELLO = byteArrayOf(1)
         val READY = byteArrayOf(2)
-        const val MAX_LINKS = 3
     }
 }

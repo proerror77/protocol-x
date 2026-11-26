@@ -19,6 +19,13 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import com.mandonothing.ops.comm.LiveKitPttTransportAdapter
+import com.mandonothing.ops.comm.PttClip
+import com.mandonothing.ops.comm.PttCue
+import com.mandonothing.ops.comm.PttPhase
+import com.mandonothing.ops.comm.PttSessionTransport
+import com.mandonothing.ops.comm.PttSpeaker
+import com.mandonothing.ops.comm.PttTransportMode
 import com.twilio.audioswitch.AudioDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,18 +58,14 @@ internal data class VoiceWorkspace(
 
 internal data class VoiceSessionState(
     val workspace: VoiceWorkspace? = null,
-    val phase: VoiceState = VoiceState.OFFLINE,
+    val phase: PttPhase = PttPhase.OFFLINE,
     val message: String = "未加入频道",
-    val speaker: VoiceSpeaker? = null,
-    val lastHeard: VoiceSpeaker? = null,
+    val speaker: PttSpeaker? = null,
+    val lastHeard: PttSpeaker? = null,
     val output: String = "系统默认",
     val receiveMuted: Boolean = false,
-    val localClips: List<VoiceLocalClip> = emptyList(),
-)
-
-internal data class VoiceLocalClip(
-    val trackSid: String, val speaker: String, val mine: Boolean, val at: String,
-    val durationMs: Int, val caption: String? = null,
+    val transportMode: PttTransportMode = PttTransportMode.NONE,
+    val localClips: List<PttClip> = emptyList(),
 )
 
 class VoiceSessionService : Service() {
@@ -73,10 +76,14 @@ class VoiceSessionService : Service() {
     private val binder = LocalBinder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutableState = MutableStateFlow(VoiceSessionState())
-    private val mutableCues = MutableSharedFlow<VoiceCue>(extraBufferCapacity = 4)
+    private val mutableCues = MutableSharedFlow<PttCue>(extraBufferCapacity = 4)
     internal val state = mutableState.asStateFlow()
     internal val cues = mutableCues.asSharedFlow()
-    private var channel: VoiceChannel? = null
+    private var transport: PttSessionTransport? = null
+    internal var pttTransportFactory: ((VoiceWorkspace, Int) -> PttSessionTransport)? = null
+    internal var onReceiveMuteChanged: ((String, Boolean) -> Unit) = { channelId, muted ->
+        NearbyService.setReceiveMuted(channelId, muted)
+    }
     private var uiOwner: Any? = null
     private var tone: ToneGenerator? = null
     private val pttSpeech by lazy { PttSpeech(assets) }
@@ -155,14 +162,14 @@ class VoiceSessionService : Service() {
     internal fun detachUi(owner: Any) {
         if (uiOwner !== owner) return
         uiOwner = null
-        channel?.stopPress(cancel = true)
+        transport?.stopPress(cancel = true)
         tone?.stopTone()
     }
 
     internal fun join(workspace: VoiceWorkspace, owner: Any) {
         if (uiOwner !== owner || mutableState.value.workspace != null) return
         captionRoute.value = captionRoute.value.copy(archiveReachable = true, reviews = emptyMap())
-        mutableState.value = VoiceSessionState(workspace, VoiceState.CONNECTING, "正在加入频道…")
+        mutableState.value = VoiceSessionState(workspace, PttPhase.CONNECTING, "正在加入频道…")
         try {
             startForegroundService(Intent(this, VoiceSessionService::class.java).setAction(START_LISTENING))
         } catch (_: IllegalStateException) {
@@ -308,9 +315,14 @@ class VoiceSessionService : Service() {
         manager.notify(id, 1, alert)
     }
 
-    private fun connect(workspace: VoiceWorkspace) {
-        val activeGeneration = ++generation
-        val next = VoiceChannel(applicationContext, scope, workspace.client, workspace.eventId, BuildConfig.DEBUG, workspace.target,
+    private fun createDefaultPttTransport(workspace: VoiceWorkspace, activeGeneration: Int): PttSessionTransport =
+        LiveKitPttTransportAdapter(
+            context = applicationContext,
+            scope = scope,
+            client = workspace.client,
+            eventId = workspace.eventId,
+            allowLocal = BuildConfig.DEBUG,
+            target = workspace.target,
             onSpeaker = { speaker ->
                 if (generation == activeGeneration) {
                     if (speaker != null && BuildConfig.DEBUG) Log.d(TAG, "Incoming audio subscribed")
@@ -330,8 +342,16 @@ class VoiceSessionService : Service() {
                 if (generation == activeGeneration) onChannelState(workspace, phase, message)
             },
         )
-        channel = next
-        mutableState.value = mutableState.value.copy(receiveMuted = next.receiveMuted)
+
+    private fun connect(workspace: VoiceWorkspace) {
+        val activeGeneration = ++generation
+        val next = pttTransportFactory?.invoke(workspace, activeGeneration)
+            ?: createDefaultPttTransport(workspace, activeGeneration)
+        transport = next
+        mutableState.value = mutableState.value.copy(
+            receiveMuted = next.receiveMuted,
+            transportMode = next.mode,
+        )
         next.connect()
     }
 
@@ -349,7 +369,7 @@ class VoiceSessionService : Service() {
                 runCatching { cache.save(key, wav) }.isSuccess
             }
             if (generation != expected || !saved) return@launch
-            val local = VoiceLocalClip(capture.trackSid, capture.speaker, capture.mine, Instant.now().toString(), samples.size / 16)
+            val local = PttClip(capture.trackSid, capture.speaker, capture.mine, Instant.now().toString(), samples.size / 16)
             mutableState.value = mutableState.value.copy(localClips =
                 (listOf(local) + mutableState.value.localClips.filterNot { it.trackSid == local.trackSid }).take(16))
             if (BuildConfig.DEBUG) Log.d(TAG, "PTT PCM cached (${if (capture.mine) "send" else "receive"})")
@@ -371,21 +391,21 @@ class VoiceSessionService : Service() {
         job.invokeOnCompletion { scope.launch { clipJobs.remove(job) } }
     }
 
-    private fun onChannelState(workspace: VoiceWorkspace, phase: VoiceState, message: String) {
+    private fun onChannelState(workspace: VoiceWorkspace, phase: PttPhase, message: String) {
         when (phase) {
-            VoiceState.LISTENING -> {
+            PttPhase.LISTENING -> {
                 hasJoined = true
                 nextRetry = 0
                 if (OfflineCaptions.forApp(this).installed) scope.launch { OfflineCaptions.forApp(this@VoiceSessionService).warm() }
                 if (tone == null) tone = runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 55) }.getOrNull()
                 playbackOnly()
             }
-            VoiceState.CONNECTING -> playbackOnly()
-            VoiceState.OFFLINE -> {
-                channel = null
+            PttPhase.CONNECTING -> playbackOnly()
+            PttPhase.OFFLINE -> {
+                transport = null
                 if (hasJoined && nextRetry < RETRY_DELAY_MS.size) {
                     playbackOnly()
-                    mutableState.value = mutableState.value.copy(phase = VoiceState.CONNECTING, message = "正在恢复收听…", speaker = null)
+                    mutableState.value = mutableState.value.copy(phase = PttPhase.CONNECTING, message = "正在恢复收听…", speaker = null)
                     notifyStatus()
                     val waitMs = RETRY_DELAY_MS[nextRetry++]
                     retry = scope.launch {
@@ -400,12 +420,12 @@ class VoiceSessionService : Service() {
             else -> Unit
         }
         mutableState.value = mutableState.value.copy(phase = phase, message = message)
-        if (phase == VoiceState.CONNECTING || phase == VoiceState.LISTENING) notifyStatus()
+        if (phase == PttPhase.CONNECTING || phase == PttPhase.LISTENING) notifyStatus()
     }
 
     internal fun startPress(owner: Any) {
-        val current = channel ?: return
-        if (uiOwner !== owner || !foreground || mutableState.value.phase != VoiceState.LISTENING ||
+        val current = transport ?: return
+        if (uiOwner !== owner || !foreground || mutableState.value.phase != PttPhase.LISTENING ||
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
         try {
             if (!microphoneType && Build.VERSION.SDK_INT >= 30) promote(withMicrophone = true)
@@ -420,19 +440,19 @@ class VoiceSessionService : Service() {
     }
 
     internal fun stopPress(owner: Any, cancel: Boolean = false) {
-        if (uiOwner === owner) channel?.stopPress(cancel)
+        if (uiOwner === owner) transport?.stopPress(cancel)
     }
 
-    internal fun audioOutputs(): List<AudioDevice> = channel?.audioOutputs().orEmpty()
-    internal fun currentOutput(): AudioDevice? = channel?.currentOutput()
-    internal fun selectOutput(device: AudioDevice) { channel?.selectOutput(device) }
+    internal fun audioOutputs(): List<AudioDevice> = transport?.audioOutputs().orEmpty()
+    internal fun currentOutput(): AudioDevice? = transport?.currentOutput()
+    internal fun selectOutput(device: AudioDevice) { transport?.selectOutput(device) }
 
     internal fun toggleReceiveMute(owner: Any) {
         if (uiOwner !== owner) return
-        val listening = channel ?: return
+        val listening = transport ?: return
         listening.setReceiveMuted(!listening.receiveMuted)
         mutableState.value = mutableState.value.copy(receiveMuted = listening.receiveMuted)
-        mutableState.value.workspace?.target?.id?.let { NearbyService.setReceiveMuted(it, listening.receiveMuted) }
+        mutableState.value.workspace?.target?.id?.let { onReceiveMuteChanged(it, listening.receiveMuted) }
     }
 
     internal fun leave(message: String = "已退出频道") {
@@ -451,8 +471,8 @@ class VoiceSessionService : Service() {
         retry = null
         nextRetry = 0
         hasJoined = false
-        channel?.close()
-        channel = null
+        transport?.close()
+        transport = null
         tone?.release()
         tone = null
         if (foreground) stopForeground(STOP_FOREGROUND_REMOVE)
@@ -472,11 +492,11 @@ class VoiceSessionService : Service() {
         if (foreground && microphoneType) promote(withMicrophone = false)
     }
 
-    private fun playCue(cue: VoiceCue) {
+    private fun playCue(cue: PttCue) {
         if (uiOwner == null) return
         val (sound, duration) = when (cue) {
-            VoiceCue.ENDED -> ToneGenerator.TONE_PROP_BEEP2 to 65
-            VoiceCue.BUSY -> ToneGenerator.TONE_PROP_NACK to 120
+            PttCue.ENDED -> ToneGenerator.TONE_PROP_BEEP2 to 65
+            PttCue.BUSY -> ToneGenerator.TONE_PROP_NACK to 120
         }
         tone?.startTone(sound, duration)
         mutableCues.tryEmit(cue)
@@ -507,7 +527,7 @@ class VoiceSessionService : Service() {
         val end = PendingIntent.getService(this, 1, Intent(this, VoiceSessionService::class.java).setAction(STOP_LISTENING), options)
         val snapshot = mutableState.value
         val title = snapshot.workspace?.title ?: "对讲频道"
-        val statusText = if (snapshot.phase == VoiceState.CONNECTING) "正在连接" else "持续收听 · ${snapshot.output}"
+        val statusText = if (snapshot.phase == PttPhase.CONNECTING) "正在连接" else "持续收听 · ${snapshot.output}"
         return Notification.Builder(this, NOTIFICATION_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(getString(R.string.app_name))

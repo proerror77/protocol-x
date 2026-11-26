@@ -17,3 +17,6 @@ android/.kotlin/
 android/**/build/
 android/local.properties
 deploy/ptt/pilot.env
+.venv-rns-poc/
+rust/protocolx-rns/target/
+rust/protocolx-rns/bindings/
