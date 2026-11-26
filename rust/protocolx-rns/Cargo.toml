@@ -3,7 +3,7 @@ name = "protocolx-rns"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Protocol X Rust Core & UniFFI bindings over personal-rns (Reticulum Network Stack)"
+description = "Protocol X Rust Core, LXMF runtime, and UniFFI bindings over personal-rns (Reticulum Network Stack)"
 
 [lib]
 name = "protocolx_rns"
@@ -21,6 +21,12 @@ required-features = ["bindgen-cli"]
 [dependencies]
 hex = "0.4"
 personal-rns = { version = "0.3.7", features = ["tokio-host", "tcp", "udp"] }
+prns-core = { version = "0.3.7", default-features = false, features = ["std"] }
+prns-runtime = { version = "0.3.7", default-features = false, features = ["std"] }
+prns-runtime-tokio = { version = "0.3.7", default-features = false }
+rmpv = "1.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 uniffi = "0.33.0"

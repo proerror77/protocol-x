@@ -241,7 +241,20 @@ fn bidirectional_rust_and_official_python_rns_poc() {
         .expect("repo root");
     let python_bin = std::env::var("PROTOCOLX_RNS_PYTHON")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| repo_root.join(".venv-rns-poc/bin/python"));
+        .unwrap_or_else(|_| {
+            let local = repo_root.join(".venv-rns-poc/bin/python");
+            if local.exists() {
+                return local;
+            }
+            if let Some(sibling) = repo_root
+                .parent()
+                .map(|p| p.join("protocol-x-rns-01/.venv-rns-poc/bin/python"))
+                .filter(|p| p.exists())
+            {
+                return sibling;
+            }
+            local
+        });
     assert!(
         python_bin.exists(),
         "Python RNS venv not found at {}. Install `rns` into .venv-rns-poc or set PROTOCOLX_RNS_PYTHON.",
