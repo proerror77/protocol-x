@@ -59,6 +59,12 @@ internal fun nearbyPermissions(context: Context): List<String> = buildList {
 
 internal enum class NearbyRadio { WIFI, BLE }
 
+/** Pluggable local radio link channel (Wi-Fi Aware or BLE L2CAP; RNS-04 adds RNS Wi-Fi Aware). */
+internal interface NearbyRadioChannel : Closeable {
+    val radio: NearbyRadio
+    fun start()
+}
+
 internal class NearbyRadios(
     private val context: Context,
     private val messages: NearbyMessages,
@@ -74,8 +80,8 @@ internal class NearbyRadios(
     private val sockets = mutableSetOf<Closeable>()
     private val diagnostics = NearbyLinkDiagnostics()
     private var closed = false
-    private var wifi: Aware? = null
-    private var ble: Ble? = null
+    private var wifi: NearbyRadioChannel? = null
+    private var ble: NearbyRadioChannel? = null
 
     private fun allowed(permission: String) = context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
@@ -195,7 +201,8 @@ internal class NearbyRadios(
     }
 
     @SuppressLint("MissingPermission")
-    private inner class Aware(private val manager: WifiAwareManager) : Closeable {
+    private inner class Aware(private val manager: WifiAwareManager) : NearbyRadioChannel {
+        override val radio: NearbyRadio = NearbyRadio.WIFI
         private val connectivity = context.getSystemService(ConnectivityManager::class.java)
         private var session: WifiAwareSession? = null
         private var active = true
@@ -207,7 +214,7 @@ internal class NearbyRadios(
         private val connections = mutableMapOf<PeerHandle, Socket>()
         private var sequence = 0
 
-        fun start() {
+        override fun start() {
             runCatching {
                 manager.attach(object : AttachCallback() {
                     override fun onAttached(attached: WifiAwareSession) {
@@ -372,7 +379,8 @@ internal class NearbyRadios(
     }
 
     @SuppressLint("MissingPermission")
-    private inner class Ble : Closeable {
+    private inner class Ble : NearbyRadioChannel {
+        override val radio: NearbyRadio = NearbyRadio.BLE
         private val adapter = context.getSystemService(BluetoothManager::class.java).adapter
         private val service = ParcelUuid(messages.group.radioUuid)
         private val scanner = adapter.bluetoothLeScanner
@@ -400,7 +408,7 @@ internal class NearbyRadios(
             override fun onScanFailed(errorCode: Int) { restart() }
         }
 
-        fun start() {
+        override fun start() {
             runCatching {
                 val server = adapter.listenUsingInsecureL2capChannel()
                 listener = server

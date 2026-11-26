@@ -13,6 +13,12 @@ import android.text.InputFilter
 import android.text.InputType
 import android.widget.EditText
 import android.widget.TextView
+import com.mandonothing.ops.comm.CommEnvelopeKind
+import com.mandonothing.ops.comm.CommGateway
+import com.mandonothing.ops.comm.CommLocalFallbackController
+import com.mandonothing.ops.comm.CommOutboundMessage
+import com.mandonothing.ops.comm.CommScope
+import com.mandonothing.ops.comm.CommSendResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -20,10 +26,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Base64
 
-internal class NearbyPanel(private val activity: Activity, private val jobs: CoroutineScope) {
-    private val settings = NearbySettings(activity)
-    private var area: Area? = null
-    var serverSupportsNearby = true
+internal class NearbyPanel(
+    private val activity: Activity,
+    private val jobs: CoroutineScope,
+    private val gateway: CommGateway,
+) : CommLocalFallbackController {
+    private var activeScope: CommScope? = null
     private var dialog: AlertDialog? = null
     private var microphone: (() -> Unit)? = null
     private val main = Handler(Looper.getMainLooper())
@@ -34,27 +42,20 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
     private var player: MediaPlayer? = null
     private var playback: File? = null
 
-    data class Area(val account: String, val event: String, val channel: String, val title: String) {
-        val scope = nearbyScope(account, event, channel)
-    }
-
-    fun select(next: Area?) {
-        if (next?.scope != area?.scope) {
+    override fun select(scope: CommScope?) {
+        if (scope?.nearbyScopeKey != activeScope?.nearbyScopeKey) {
             pause()
-            area = next
+            activeScope = scope
+            gateway.selectScope(scope)
         }
         resume()
     }
 
-    fun resume(refresh: Boolean = false) {
-        val active = area
-        val config = active?.let { settings.read(it.account, it.event, it.channel, it.title) }
-        if (config == null || Build.VERSION.SDK_INT < 29) {
-            if (NearbyService.activeScope != null) NearbyService.stop(activity)
-            return
-        }
-        if (refresh || NearbyService.activeScope != config.scope) NearbyService.start(activity, config)
-        if (nearbyPermissions(activity).any { activity.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) {
+    override fun resume(refresh: Boolean) {
+        gateway.refresh(forceRestart = refresh)
+        if (gateway.isSessionReady(activeScope) &&
+            nearbyPermissions(activity).any { activity.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        ) {
             val prefs = activity.getSharedPreferences("nearby_permissions", Activity.MODE_PRIVATE)
             if (!prefs.getBoolean("prompted", false)) {
                 prefs.edit().putBoolean("prompted", true).apply()
@@ -63,7 +64,7 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
         }
     }
 
-    fun pause() {
+    override fun pause() {
         dialog?.dismiss()
         microphone = null
         liveHold?.stop(cancel = true)
@@ -72,7 +73,7 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
         stopPlayer()
     }
 
-    fun permissionResult(code: Int) {
+    override fun permissionResult(code: Int) {
         if (code == RADIO_PERMISSION) resume()
         if (code == MICROPHONE_PERMISSION) {
             val start = microphone
@@ -82,22 +83,11 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
         }
     }
 
-    fun currentSession(): NearbyMessages? {
-        val active = area ?: return null
-        return NearbyService.session.value?.takeIf { NearbyService.activeScope == active.scope }
-    }
-
-    fun permissionsMissing() = nearbyPermissions(activity).any {
+    override fun permissionsMissing() = nearbyPermissions(activity).any {
         activity.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
     }
 
-    fun unavailableMessage(): String = when {
-        Build.VERSION.SDK_INT < 29 -> "离线通信需要 Android 10 或更新版本"
-        !serverSupportsNearby -> "服务端尚未启用频道离线通信"
-        else -> "离线通信权限待同步"
-    }
-
-    fun openAssistance(send: (String) -> Unit) {
+    override fun openAssistance(send: (String) -> Unit) {
         dialog?.dismiss()
         val field = EditText(activity).apply {
             hint = "填写需要的协助"
@@ -115,7 +105,7 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
         shown.show()
     }
 
-    fun grantRadios() {
+    override fun grantRadios() {
         val requested = nearbyPermissions(activity) +
             if (Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList()
         val missing = requested.filter {
@@ -124,14 +114,11 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
         if (missing.isNotEmpty()) activity.requestPermissions(missing.toTypedArray(), RADIO_PERMISSION)
     }
 
-    private fun state(active: Area) = checkNotNull(NearbyService.session.value)
-        .also { check(active == area && NearbyService.activeScope == active.scope) }
-
-    fun startHold(feedback: TextView) {
-        val active = area ?: return
-        val session = currentSession()
+    override fun startHold(feedback: TextView) {
+        val active = activeScope ?: return
+        val session = NearbyService.session.value?.takeIf { NearbyService.activeScope == active.nearbyScopeKey }
         if (session == null) {
-            feedback.text = unavailableMessage()
+            feedback.text = gateway.unavailableReason()
             return
         }
         val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
@@ -145,11 +132,11 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
             feedback.text = "当前频道语音未启用，可发送附近文字"
             return
         }
-        if (hasMicrophone()) beginVoice(active, session, feedback)
+        if (hasMicrophone()) beginVoice(active, feedback)
         else requestMicrophone { feedback.text = "已允许麦克风，按住说话，松开发送" }
     }
 
-    fun stopHold(feedback: TextView, cancel: Boolean) {
+    override fun stopHold(feedback: TextView, cancel: Boolean) {
         val live = liveHold
         if (live != null) {
             liveHold = null
@@ -159,19 +146,25 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
             return
         }
         if (cancel) discard()
-        else area?.let { finishRecording(it, feedback) }
+        else activeScope?.let { finishRecording(it, feedback) }
     }
 
-    private fun beginVoice(active: Area, session: NearbyMessages, feedback: TextView) {
+    private fun beginVoice(active: CommScope, feedback: TextView) {
         val controller = NearbyService.liveVoice
-        if (controller != null && NearbyService.diagnostics.value.liveVoicePeers > 0) {
+        if (controller != null && gateway.networkState.value.liveVoicePeerCount > 0) {
             stopPlayer()
             val started = controller.start { audio ->
                 jobs.launch {
-                    val saved = withContext(Dispatchers.IO) {
-                        runCatching { session.send("", audio) }.isSuccess
+                    val result = withContext(Dispatchers.IO) {
+                        gateway.send(
+                            CommOutboundMessage(
+                                scope = active,
+                                kind = CommEnvelopeKind.VOICE_NOTE,
+                                audioBytes = audio,
+                            ),
+                        )
                     }
-                    if (area == active) feedback.text = if (saved)
+                    if (activeScope == active) feedback.text = if (result !is CommSendResult.Rejected)
                         "语音留言已保存" else "语音留言未保存，请重试"
                 }
             }
@@ -197,8 +190,8 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
     }
 
     @Suppress("DEPRECATION")
-    private fun beginRecording(active: Area, feedback: TextView) {
-        if (recording != null || active != area) return
+    private fun beginRecording(active: CommScope, feedback: TextView) {
+        if (recording != null || active != activeScope) return
         stopPlayer()
         try {
             val file = File.createTempFile("nearby-record-", ".m4a", activity.cacheDir)
@@ -222,7 +215,7 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
         }
     }
 
-    private fun finishRecording(active: Area, feedback: TextView) {
+    private fun finishRecording(active: CommScope, feedback: TextView) {
         val file = recording ?: return
         finishAtLimit?.let(main::removeCallbacks)
         finishAtLimit = null
@@ -236,14 +229,21 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
             feedback.text = "录音太短或无法完成，请重试"
             return
         }
-        val current = runCatching { state(active) }.getOrNull()
         jobs.launch {
-            val saved = withContext(Dispatchers.IO) {
-                try { current?.send("", file.readBytes()) != null }
-                catch (_: Exception) { false }
-                finally { file.delete() }
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    gateway.send(
+                        CommOutboundMessage(
+                            scope = active,
+                            kind = CommEnvelopeKind.VOICE_NOTE,
+                            audioBytes = file.readBytes(),
+                        ),
+                    )
+                } finally {
+                    file.delete()
+                }
             }
-            feedback.text = if (saved) "语音已保存 · 等待 Wi-Fi Aware 送达" else "暂时无法保存语音"
+            feedback.text = if (result !is CommSendResult.Rejected) "语音已保存 · 等待 Wi-Fi Aware 送达" else "暂时无法保存语音"
         }
     }
 
@@ -256,7 +256,7 @@ internal class NearbyPanel(private val activity: Activity, private val jobs: Cor
         recording = null
     }
 
-    fun play(encoded: String, feedback: TextView) {
+    override fun play(encoded: String, feedback: TextView) {
         stopPlayer()
         try {
             val file = File.createTempFile("nearby-play-", ".m4a", activity.cacheDir)
