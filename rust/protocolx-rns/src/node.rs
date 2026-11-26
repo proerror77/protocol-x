@@ -767,6 +767,11 @@ impl RnsNode {
             detail: "bitrate_bps must be non-zero".to_string(),
         })?;
 
+        let bridge: Arc<dyn RnsCustomInterfaceBridge> = Arc::from(bridge);
+        let detach_handle = Arc::new(crate::bridge::BridgeDetachHandle::new(
+            interface_tag.clone(),
+            Arc::clone(&bridge),
+        ));
         let (inbound_tx, inbound_rx) = tokio::sync::mpsc::unbounded_channel();
         let iface = CustomBridgeInterface::new(
             interface_tag.clone(),
@@ -774,7 +779,8 @@ impl RnsNode {
             hw_mtu as usize,
             bitrate,
             inbound_rx,
-            Arc::from(bridge),
+            bridge,
+            Arc::clone(&detach_handle),
         );
         let iface_id = iface.id();
         let attached = state.handle.add_interface(iface);
@@ -784,7 +790,10 @@ impl RnsNode {
             txs.insert(interface_tag.clone(), inbound_tx);
         }
         if let Ok(mut ids) = self.events.bridges.interface_ids.lock() {
-            ids.insert(interface_tag, iface_id);
+            ids.insert(interface_tag.clone(), iface_id);
+        }
+        if let Ok(mut dhs) = self.events.bridges.detach_handles.lock() {
+            dhs.insert(interface_tag, detach_handle);
         }
         Ok(())
     }
@@ -805,9 +814,22 @@ impl RnsNode {
         if let Ok(mut metrics) = self.events.bridges.metrics.lock() {
             metrics.remove(&interface_tag);
         }
+        let detach_handle = self
+            .events
+            .bridges
+            .detach_handles
+            .lock()
+            .ok()
+            .and_then(|mut dhs| dhs.remove(&interface_tag));
 
-        if let Some(attached) = state.custom_ifaces.remove(&interface_tag) {
+        let attached = state.custom_ifaces.remove(&interface_tag);
+        drop(guard);
+
+        if let Some(attached) = attached {
             attached.teardown();
+            if let Some(dh) = detach_handle {
+                dh.notify_detached_once();
+            }
             Ok(true)
         } else {
             Ok(false)

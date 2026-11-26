@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use prns_core::interfaces::{
@@ -13,11 +14,36 @@ use tokio::sync::mpsc;
 
 use crate::types::{CustomInterfaceKind, CustomLinkMetrics, RnsCustomInterfaceBridge};
 
+/// Idempotent guard ensuring `on_interface_detached` fires exactly once even if teardown cancels `run`.
+pub(crate) struct BridgeDetachHandle {
+    interface_tag: String,
+    bridge: Arc<dyn RnsCustomInterfaceBridge>,
+    notified: AtomicBool,
+}
+
+impl BridgeDetachHandle {
+    pub(crate) fn new(interface_tag: String, bridge: Arc<dyn RnsCustomInterfaceBridge>) -> Self {
+        Self {
+            interface_tag,
+            bridge,
+            notified: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn notify_detached_once(&self) {
+        if !self.notified.swap(true, Ordering::SeqCst) {
+            self.bridge
+                .on_interface_detached(self.interface_tag.clone());
+        }
+    }
+}
+
 /// Runtime registry for custom pluggable interfaces and their Kotlin-reported link metrics.
 pub(crate) struct BridgeRegistry {
     pub(crate) inbound_txs: Mutex<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>,
     pub(crate) interface_ids: Mutex<HashMap<String, InterfaceId>>,
     pub(crate) metrics: Mutex<HashMap<String, HashMap<String, CustomLinkMetrics>>>,
+    pub(crate) detach_handles: Mutex<HashMap<String, Arc<BridgeDetachHandle>>>,
 }
 
 impl BridgeRegistry {
@@ -26,6 +52,7 @@ impl BridgeRegistry {
             inbound_txs: Mutex::new(HashMap::new()),
             interface_ids: Mutex::new(HashMap::new()),
             metrics: Mutex::new(HashMap::new()),
+            detach_handles: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -40,6 +67,7 @@ pub(crate) struct CustomBridgeInterface {
     channel_tag: Vec<u8>,
     inbound_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     bridge: Arc<dyn RnsCustomInterfaceBridge>,
+    detach_handle: Arc<BridgeDetachHandle>,
     status: TokioInterfaceStatus,
 }
 
@@ -51,6 +79,7 @@ impl CustomBridgeInterface {
         bitrate: BitrateBps,
         inbound_rx: mpsc::UnboundedReceiver<Vec<u8>>,
         bridge: Arc<dyn RnsCustomInterfaceBridge>,
+        detach_handle: Arc<BridgeDetachHandle>,
     ) -> Self {
         let prns_kind = match kind {
             CustomInterfaceKind::WifiAware => InterfaceKind::WifiAwarePeer,
@@ -72,6 +101,7 @@ impl CustomBridgeInterface {
             channel_tag,
             inbound_rx,
             bridge,
+            detach_handle,
             status,
         }
     }
@@ -146,12 +176,17 @@ impl Interface for CustomBridgeInterface {
 
         self.status
             .set_connection(prns_core::interfaces::ConnectionState::Disconnected);
-        let bridge = Arc::clone(&self.bridge);
-        let tag = self.interface_tag.clone();
+        let dh = Arc::clone(&self.detach_handle);
         let _ = tokio::task::spawn_blocking(move || {
-            bridge.on_interface_detached(tag);
+            dh.notify_detached_once();
         })
         .await;
+    }
+}
+
+impl Drop for CustomBridgeInterface {
+    fn drop(&mut self) {
+        self.detach_handle.notify_detached_once();
     }
 }
 
