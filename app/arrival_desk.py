@@ -82,6 +82,7 @@ class PlanInput(StrictModel):
 class StageInput(StrictModel):
     expected_version: int = Field(ge=1)
     stage: Literal["met", "boarded", "hotel_handoff", "checked_in"]
+    idempotency_key: UUID4 | None = None
 
 
 class PhotoInput(StrictModel):
@@ -408,7 +409,30 @@ class ArrivalDesk:
         return step["id"] if user["role"] == "dispatcher" or responsible == user["actor"] else None
 
     def confirm(self, event_id, task_id, body, user):
+        import hashlib
+        from uuid import uuid4
+
         with self.store.connect(write=True) as conn:
+            key = f"arrival-stage:{body.idempotency_key}" if body.idempotency_key else None
+            fingerprint = (
+                hashlib.sha256(dump({
+                    "event_id": event_id,
+                    "plan_id": task_id,
+                    "stage": body.stage,
+                    "expected_version": body.expected_version,
+                    "actor": user["actor"],
+                }).encode()).hexdigest()
+                if key else None
+            )
+            if key:
+                existing = conn.execute(
+                    "SELECT fingerprint, data FROM receipts WHERE event_id=? AND idempotency_key=?",
+                    (event_id, key),
+                ).fetchone()
+                if existing:
+                    if existing["fingerprint"] != fingerprint:
+                        raise HTTPException(409, "幂等键已用于其他接待节点确认")
+                    return json.loads(existing["data"])["result"]
             record, plan, row, task = self.load(conn, event_id, task_id, user)
             stages = self.scope(conn, event_id)["arrival_process"]["stages"]
             if body.expected_version != record["version"] or self.allowed_stage(plan, task, user, stages) != body.stage:
@@ -424,7 +448,25 @@ class ArrivalDesk:
                          (dump(task), event_id, row["ontology_id"], task_id))
             conn.execute("UPDATE arrival_plans SET version=version+1 WHERE event_id=? AND task_id=?", (event_id, task_id))
             history(conn, event_id, task_id, body.stage, user["actor"], "", at)
-        return {"version": record["version"] + 1, "stage": body.stage, "confirmed_at": at, "action": stage["action"]}
+            result = {"version": record["version"] + 1, "stage": body.stage, "confirmed_at": at, "action": stage["action"]}
+            if key:
+                receipt = {
+                    "id": f"receipt-{uuid4().hex}",
+                    "action_type": "confirm_arrival_stage",
+                    "target_ref": ref_of(row),
+                    "status": "committed",
+                    "actor": user["actor"],
+                    **({"speaker": user["name"]} if "name" in user else {}),
+                    "created_at": at,
+                    "idempotency_key": key,
+                    "proposal_id": None,
+                    "result": result,
+                }
+                conn.execute(
+                    "INSERT INTO receipts(id,event_id,idempotency_key,fingerprint,actor,data) VALUES (?,?,?,?,?,?)",
+                    (receipt["id"], event_id, key, fingerprint, user["actor"], dump(receipt)),
+                )
+        return result
 
     def photo(self, event_id, task_id, player_id, user, upload=None):
         with self.store.connect(write=upload is not None) as conn:
