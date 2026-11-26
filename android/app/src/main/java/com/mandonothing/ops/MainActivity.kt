@@ -48,7 +48,28 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.view.ViewTreeObserver
-import io.livekit.android.renderer.TextureViewRenderer
+import com.mandonothing.ops.comm.ChannelAttachmentOutboxAdapter
+import com.mandonothing.ops.comm.CommDeliveryState
+import com.mandonothing.ops.comm.CommEnvelopeKind
+import com.mandonothing.ops.comm.CommGateway
+import com.mandonothing.ops.comm.CommLocalFallbackController
+import com.mandonothing.ops.comm.CommMessageEnvelope
+import com.mandonothing.ops.comm.CommOutboundMessage
+import com.mandonothing.ops.comm.CommPermissionCodes
+import com.mandonothing.ops.comm.CommScope
+import com.mandonothing.ops.comm.CommSendResult
+import com.mandonothing.ops.comm.CommTransportKind
+import com.mandonothing.ops.comm.ConferenceCallTransport
+import com.mandonothing.ops.comm.DefaultCommGateway
+import com.mandonothing.ops.comm.FieldOfflineQueueAdapter
+import com.mandonothing.ops.comm.LiveKitMediaFactory
+import com.mandonothing.ops.comm.PhotoOutboxAdapter
+import com.mandonothing.ops.comm.PttClip
+import com.mandonothing.ops.comm.PttCue
+import com.mandonothing.ops.comm.PttPhase
+import com.mandonothing.ops.comm.PttSpeaker
+import com.mandonothing.ops.comm.VideoChannelState
+import com.mandonothing.ops.comm.VideoChannelTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,7 +94,8 @@ import kotlin.math.max
 
 class MainActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val nearbyPanel by lazy { NearbyPanel(this, scope) }
+    private val commGateway: CommGateway by lazy { DefaultCommGateway(this, scope) }
+    private val commFallback: CommLocalFallbackController by lazy { NearbyPanel(this, scope, commGateway) }
     private val appUpdates by lazy { AppUpdates(this) }
     private var channelReceiveMuted = false
     private var flightNoticeObserver: Job? = null
@@ -96,7 +118,7 @@ class MainActivity : Activity() {
     private lateinit var channelAttach: Button
     private lateinit var channelMediaAttach: Button
     private lateinit var channelMediaPreview: ImageView
-    private val channelAttachmentFiles by lazy { ChannelAttachmentFiles(this) }
+    private val channelAttachmentFiles by lazy { ChannelAttachmentOutboxAdapter(ChannelAttachmentFiles(this)) }
     private var channelMediaDraft: ChannelAttachmentFiles.Draft? = null
     private var channelMediaPicker: ChannelMediaPicker? = null
     private var channelMediaSource: ChannelMediaSource? = null
@@ -131,13 +153,10 @@ class MainActivity : Activity() {
     private var channelRecipientActor: String? = null
     private var channelPhoto: ByteArray? = null
     private var channelPhotoRequest: Pair<String, String>? = null
-    private var privateReader: Pair<String, NearbyPrivateIdentity>? = null
-    private val privateContent = mutableMapOf<String, NearbyPrivateContent>()
     private var channelDraftKey: String? = null
     private val channelDrafts = mutableMapOf<String, String>()
-    private val nearbySettings by lazy { NearbySettings(this) }
     private var nearbyProvision: Job? = null
-    private var nearbyObserver: Job? = null
+    private var commObserver: Job? = null
     private var nearbyLastSync = 0L
     private var onlineVoiceRequested = false
     private var onlineVoiceEverJoined = false
@@ -212,16 +231,16 @@ class MainActivity : Activity() {
     private lateinit var replayStop: Button
     private var client: OpsClient? = null
     private val fieldSession by lazy { FieldSessionStore(this) }
-    private val fieldOffline by lazy { FieldOfflineStore(this, fieldSession) }
+    private val fieldOffline by lazy { FieldOfflineQueueAdapter(FieldOfflineStore(this, fieldSession)) }
     private val voiceCache by lazy { VoiceClipCache.forApp(this) }
-    private var localVoiceClips = emptyList<VoiceLocalClip>()
+    private var localVoiceClips = emptyList<PttClip>()
     private var captionDownload: Job? = null
     private var voiceWarmup: Job? = null
     private val warmAttempts = mutableMapOf<String, Long>()
     private var queuedField = emptyList<FieldOfflineStore.Queued>()
     private var fieldSync: Job? = null
     private var workspaceOnline = false
-    private val photoOutbox by lazy { PhotoOutbox(this) }
+    private val photoOutbox by lazy { PhotoOutboxAdapter(PhotoOutbox(this)) }
     private var radio: RadioTarget? = null
     private var groupBeforeDirect: RadioTarget? = null
     private var directoryData = JSONObject()
@@ -241,7 +260,7 @@ class MainActivity : Activity() {
     private var conference: DirectCall? = null
     private var callDialog: AlertDialog? = null
     private var callWait: Job? = null
-    private var callMedia: ConferenceMedia? = null
+    private var callMedia: ConferenceCallTransport? = null
     private var callPermission: (() -> Unit)? = null
     private var restoreRadioAfterCall = false
     private lateinit var dispatchButton: Button
@@ -251,8 +270,8 @@ class MainActivity : Activity() {
     private var voiceBound = false
     private var voiceObserver: Job? = null
     private var cueObserver: Job? = null
-    private var video: VideoChannel? = null
-    private var videoState = VideoState("")
+    private var video: VideoChannelTransport? = null
+    private var videoState = VideoChannelState("")
     private val returnToParent = if (Build.VERSION.SDK_INT >= 33) OnBackInvokedCallback {
         parentSection()?.let(::showSection)
     } else null
@@ -277,9 +296,9 @@ class MainActivity : Activity() {
     private var section = Section.LIVE
     private var receiptScope: ReceiptScope? = null
     private var callsign = ""
-    private var remoteSpeaker: VoiceSpeaker? = null
-    private var lastHeard: VoiceSpeaker? = null
-    private var voiceState = VoiceState.OFFLINE
+    private var remoteSpeaker: PttSpeaker? = null
+    private var lastHeard: PttSpeaker? = null
+    private var voiceState = PttPhase.OFFLINE
     private var role = "staff"
     private var hasWorkspace = false
     private var timelineLimit = 20
@@ -514,16 +533,11 @@ class MainActivity : Activity() {
             }
         }
         enableArrivalWatch()
-        NearbyService.uiActive = true
-        nearbyPanel.resume()
-        nearbyObserver = scope.launch {
-            launch { NearbyService.radios.collect { updateChannelComposer() } }
-            launch { NearbyService.channelCredential.collect { updateChannelComposer() } }
-            launch { NearbyService.diagnostics.collect { updateChannelComposer() } }
-            NearbyService.session.collectLatest { local ->
-                if (local == null) renderConversation()
-                else local.messages.collect { renderConversation() }
-            }
+        commGateway.setUiActive(true)
+        commFallback.resume()
+        commObserver = scope.launch {
+            launch { commGateway.networkState.collect { updateChannelComposer() } }
+            commGateway.messages.collect { renderConversation() }
         }
         updateBackHandler()
         if (section == Section.VIDEO) connectVideo()
@@ -562,9 +576,9 @@ class MainActivity : Activity() {
         visible = false
         flightNoticeObserver?.cancel()
         scheduleVisibleChannelReads()
-        NearbyService.uiActive = false
-        nearbyPanel.pause()
-        nearbyObserver?.cancel()
+        commGateway.setUiActive(false)
+        commFallback.pause()
+        commObserver?.cancel()
         nearbyProvision?.cancel()
         if (conference != null && callPermission == null) finishConference(returnToRadio = false)
         updateBackHandler()
@@ -642,8 +656,8 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == NearbyPanel.RADIO_PERMISSION || requestCode == NearbyPanel.MICROPHONE_PERMISSION) {
-            nearbyPanel.permissionResult(requestCode)
+        if (requestCode == CommPermissionCodes.RADIO || requestCode == CommPermissionCodes.MICROPHONE) {
+            commFallback.permissionResult(requestCode)
             updateChannelComposer()
             return
         }
@@ -1139,7 +1153,7 @@ class MainActivity : Activity() {
         val output = voiceService?.state?.value?.takeIf { it.workspace?.eventId == eventId && eventId != null }
             ?.let { "音频输出 · " + it.output }
         val manage = if (role == "dispatcher" && client?.fieldEnabled == true) "人员与频道" else null
-        val exitRadio = if (voiceState != VoiceState.OFFLINE) "离开语音" else null
+        val exitRadio = if (voiceState != PttPhase.OFFLINE) "离开语音" else null
         val retrySync = if (workspaceOnline) null else "重试同步"
         val choices = listOfNotNull("切换活动", manage, output, exitRadio, retrySync, "关于 Protocol X", "退出登录").toTypedArray()
         AlertDialog.Builder(this)
@@ -1348,7 +1362,7 @@ class MainActivity : Activity() {
         channelSendStatus = text("", 13, MUTED)
         put(channelEditor, channelSendStatus, 4)
         channelRadioPermission = linkButton("允许附近设备访问").apply {
-            setOnClickListener { nearbyPanel.grantRadios() }
+            setOnClickListener { commFallback.grantRadios() }
         }
         put(channelEditor, channelRadioPermission, 2)
         put(channelComposer, channelEditor, 0)
@@ -1436,7 +1450,7 @@ class MainActivity : Activity() {
                     nearbyHold = nearbyVoiceFallback()
                     if (nearbyHold) {
                         stopReplay()
-                        nearbyPanel.startHold(pttHint)
+                        commFallback.startHold(pttHint)
                     } else startPress()
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_UP -> {
@@ -1444,7 +1458,7 @@ class MainActivity : Activity() {
                         motion.getPointerId(motion.actionIndex) == activePointer) {
                         activePointer = MotionEvent.INVALID_POINTER_ID
                         val cancelled = motion.actionMasked == MotionEvent.ACTION_CANCEL
-                        if (nearbyHold) nearbyPanel.stopHold(pttHint, cancelled)
+                        if (nearbyHold) commFallback.stopHold(pttHint, cancelled)
                         else voiceService?.stopPress(voiceOwner, cancel = cancelled)
                         nearbyHold = false
                         view.parent.requestDisallowInterceptTouchEvent(false)
@@ -1461,11 +1475,11 @@ class MainActivity : Activity() {
                 nearbyHold = nearbyVoiceFallback()
                 if (nearbyHold) {
                     stopReplay()
-                    nearbyPanel.startHold(pttHint)
+                    commFallback.startHold(pttHint)
                 } else startPress()
             }
             if (press.action == KeyEvent.ACTION_UP) {
-                if (nearbyHold) nearbyPanel.stopHold(pttHint, press.isCanceled)
+                if (nearbyHold) commFallback.stopHold(pttHint, press.isCanceled)
                 else voiceService?.stopPress(voiceOwner)
                 nearbyHold = false
             }
@@ -1535,7 +1549,7 @@ class MainActivity : Activity() {
         client?.takeIf { it.bound }?.let {
             getPreferences(MODE_PRIVATE).edit().putString("event-" + it.localSessionKey, target).apply()
         }
-        nearbyPanel.serverSupportsNearby = true
+        commGateway.setServerNearbySupported(true)
         nearbyProvision?.cancel()
         nearbyLastSync = 0L
         if (!keepContext) {
@@ -1592,7 +1606,7 @@ class MainActivity : Activity() {
         updateRadioLabels()
         taskContext.text = currentEventTitle()
         applyVoiceSession(voiceService?.state?.value ?: VoiceSessionState())
-        updateVideo(VideoState(VIDEO_IDLE_TEXT))
+        updateVideo(VideoChannelState(VIDEO_IDLE_TEXT))
         renderTasks()
         renderConversation()
         renderTimeline()
@@ -1642,6 +1656,7 @@ class MainActivity : Activity() {
                 if (eventId != selected || client !== connected) return@launch
                 val recovered = !workspaceOnline
                 workspaceOnline = true
+                commGateway.setServerReachable(true)
                 if (recovered) {
                     channelPosterRetryAt.clear()
                     loadVisibleChannelPosters()
@@ -1661,7 +1676,7 @@ class MainActivity : Activity() {
                     }
                 }
                 if (eventId != selected || client !== connected) return@launch
-                if (onlineVoiceRequested && voiceState == VoiceState.OFFLINE && radio?.kind == "group" &&
+                if (onlineVoiceRequested && voiceState == PttPhase.OFFLINE && radio?.kind == "group" &&
                     android.os.SystemClock.elapsedRealtime() - onlineVoiceAttemptAt >= 30_000) connectVoice()
                 syncChannel()
                 flushPhotoOutbox()
@@ -1726,6 +1741,7 @@ class MainActivity : Activity() {
                     if (latest != null && activeEventRemoved(latest, selected)) return@launch
                 }
                 workspaceOnline = false
+                commGateway.setServerReachable(false)
                 if (!connected.bound && archiveEnabled)
                     voiceService?.observeCaptionServer(connected, selected, null, null)
                 updateVoice(voiceState, voiceLabel.text.toString())
@@ -1897,7 +1913,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 val selected = eventId ?: return@setOnClickListener
                 val version = task.getInt("version")
-                nearbyPanel.openAssistance { note ->
+                commFallback.openAssistance { note ->
                     if (eventId == selected) submitQueued(selected, ref, version, HELP,
                         JSONObject().put("note", note), nearby = true)
                 }
@@ -2288,7 +2304,7 @@ class MainActivity : Activity() {
 
     private fun showNewestDispatchPrompt() {
         if (section != Section.LIVE || agentDialog != null || callDialog != null || player != null ||
-            voiceState in setOf(VoiceState.REQUESTING, VoiceState.SPEAKING)) return
+            voiceState in setOf(PttPhase.REQUESTING, PttPhase.SPEAKING)) return
         val item = (if (role == "dispatcher") agentIncidents.firstOrNull()
                     else dispatchInstructions.lastOrNull { !it.optBoolean("received") }) ?: return
         val at = runCatching { Instant.parse(item.getString("created_at")) }.getOrNull() ?: return
@@ -2612,33 +2628,22 @@ class MainActivity : Activity() {
                 .put("status", "pending").put("duration_ms", clip.durationMs).put("has_audio", 1)
         }
         val agentRows = agentActivity.map { JSONObject(it.toString()).put("source", "agent_activity") }
-        val current = NearbyService.session.value
         val active = client
         val event = eventId
         val target = radio
-        val validNearby = active?.bound == true && event != null && target?.kind == "group" &&
-            NearbyService.activeScope == nearbyScope(active.localSessionKey, event, target.id)
-        val nearby = if (validNearby && current != null) current.messages.value.asSequence()
-            .filterNot { it.isControl }
-            .filter { !it.isPrivate || it.sender == current.sender || current.isPrivateAddressedToMe(it) }
-            .toList().takeLast(24).mapNotNull { message ->
-                val privateMessage = if (message.isPrivate) readPrivateMessage(message) ?: return@mapNotNull null else null
-                val receipts = current.readReceipts(message.id)
-                JSONObject().put("source", "nearby").put("created_at", Instant.ofEpochMilli(message.time).toString())
-                    .put("id", message.id).put("name", message.name).put("mine", message.sender == current.sender)
-                    .put("text", privateMessage?.text ?: message.text)
-                    .put("audio", message.audio).put("assistance", message.assistance)
-                    .put("delivery", message.delivery.name).put("synced", message.synced)
-                    .put("private", message.isPrivate)
-                    .put("photo", privateMessage?.photo?.let(java.util.Base64.getEncoder()::encodeToString))
-                    .put("needs_receipt", message.confirmationRequired)
-                    .put("read_by_me", receipts.any { it.actor == current.actor })
-                    .put("read_count", receipts.size)
-                    .put("read_by", receipts.map { it.name }.distinct().joinToString("、"))
-                    .put("route", (if (message.received || message.sender != current.sender)
-                        message.deliveredVia else message.attemptedVia)?.name)
-            } else emptyList()
         val actor = active?.profile?.optString("actor").orEmpty()
+        val commScope = active?.takeIf { it.bound }?.let { bound ->
+            if (event != null && target?.kind == "group") {
+                CommScope(event, target.id, target.name, target.kind, bound.localSessionKey, actor)
+            } else null
+        }
+        val commEnvelopes = if (commScope != null && commGateway.isSessionReady(commScope)) {
+            commGateway.messages.value.associateBy { it.id }
+        } else emptyMap()
+        val nearby = commEnvelopes.values.map { envelope ->
+            JSONObject().put("source", "comm").put("created_at", Instant.ofEpochMilli(envelope.createdAtMs).toString())
+                .put("id", envelope.id).put("mine", envelope.isMine)
+        }
         val publishedIds = channelAttachments.map { it.getString("id") }.toSet()
         val media = channelAttachments + pendingChannelAttachments.filter {
             it.event == event && it.channel == target?.id && it.id !in publishedIds
@@ -2660,8 +2665,8 @@ class MainActivity : Activity() {
             if (attachment) {
                 renderChannelAttachment(bubble, item)
                     ?.let { posters.add(item to it) }
-            } else if (item.optString("source") == "nearby") {
-                renderNearbyRecord(bubble, item, mine)
+            } else if (item.optString("source") == "comm") {
+                commEnvelopes[item.getString("id")]?.let { renderCommRecord(bubble, it) }
             } else if (item.has("track_sid")) {
                 renderVoiceRecord(bubble, item)
             } else if (item.optString("source") == "dispatch_instruction") {
@@ -2705,72 +2710,74 @@ class MainActivity : Activity() {
         saveChannelReadReceipts(ids)
     }
 
+    private fun activeCommScope(): CommScope? {
+        val active = client?.takeIf { it.bound } ?: return null
+        val event = eventId ?: return null
+        val target = radio?.takeIf { it.kind == "group" } ?: return null
+        return CommScope(event, target.id, target.name, target.kind, active.localSessionKey,
+            active.profile.optString("actor"))
+    }
+
     private fun saveChannelReadReceipts(ids: List<String>) {
-        val session = nearbyPanel.currentSession() ?: return
+        val activeScope = activeCommScope() ?: return
+        if (!commGateway.isSessionReady(activeScope)) return
         val fresh = ids.filter { pendingReadReceipts.add(it) }
         if (fresh.isEmpty()) return
         scope.launch {
             try {
-                withContext(Dispatchers.IO) { fresh.forEach { session.markRead(it) } }
+                withContext(Dispatchers.IO) { fresh.forEach { commGateway.markRead(activeScope, it) } }
             } finally {
                 pendingReadReceipts.removeAll(fresh)
             }
         }
     }
 
-    private fun readPrivateMessage(message: NearbyMessage): NearbyPrivateContent? {
-        val config = currentNearbyCredential() ?: return null
-        val cacheKey = config.generation + "|" + message.id
-        privateContent[cacheKey]?.let { return it }
-        return runCatching {
-            val identity = privateReader?.takeIf { it.first == config.account }?.second
-                ?: NearbyPrivateIdentity(this, config.account).also { privateReader = config.account to it }
-            NearbyPrivate.open(config, identity, message.actor, message.recipient, message.id, message.sealedPayload)
-                ?.also {
-                    if (privateContent.size >= 28) privateContent.remove(privateContent.keys.first())
-                    privateContent[cacheKey] = it
-                }
-        }.getOrNull()
-    }
-
-    private fun renderNearbyRecord(bubble: LinearLayout, item: JSONObject, mine: Boolean) {
-        val name = if (mine) "我" else item.optString("name")
-        val time = recordTime(item.getString("created_at"))
-        val route = nearbyRadio(item.optString("route"))
+    private fun renderCommRecord(bubble: LinearLayout, envelope: CommMessageEnvelope) {
+        val mine = envelope.isMine
+        val name = if (mine) "我" else envelope.senderName
+        val time = recordTime(Instant.ofEpochMilli(envelope.createdAtMs).toString())
+        val route = envelope.route.deliveredTransport ?: envelope.route.attemptedTransport
         val routeLabel = when (route) {
-            NearbyRadio.WIFI -> "Wi-Fi Aware"
-            NearbyRadio.BLE -> "蓝牙"
+            CommTransportKind.WIFI_AWARE -> "Wi-Fi Aware"
+            CommTransportKind.BLE_L2CAP -> "蓝牙"
+            CommTransportKind.RNS_MESH -> "RNS"
+            CommTransportKind.INTERNET_HTTP -> "网络"
+            CommTransportKind.LIVEKIT_MEDIA -> "实时"
             null -> if (mine) null else "附近"
         }
         val routeColor = when (route) {
-            NearbyRadio.WIFI -> WIFI_ROUTE
-            NearbyRadio.BLE -> BLE_ROUTE
+            CommTransportKind.WIFI_AWARE -> WIFI_ROUTE
+            CommTransportKind.BLE_L2CAP -> BLE_ROUTE
+            CommTransportKind.RNS_MESH -> ONLINE
+            CommTransportKind.INTERNET_HTTP, CommTransportKind.LIVEKIT_MEDIA -> NETWORK_ROUTE
             null -> MUTED
         }
         val kind = when {
-            item.optBoolean("assistance") -> "求助"
-            item.optBoolean("private") -> "定向"
+            envelope.assistance -> "求助"
+            envelope.isPrivate -> "定向"
             else -> null
         }
         val heading = listOfNotNull(name, kind, time, routeLabel).joinToString(" · ")
         bubble.addView(text(heading, 13, routeColor, true))
-        val id = item.getString("id")
-        val needsRead = !mine && item.optBoolean("needs_receipt") && !item.optBoolean("read_by_me")
-        val messageText = item.optString("text")
+        val id = envelope.id
+        val needsRead = !mine && envelope.needsReadReceipt && !envelope.readByMe
+        val messageText = envelope.text
         if (messageText.isNotBlank()) {
             val body = text(messageText, 16, INK)
             put(bubble, body, 5)
             if (needsRead) unreadChannelText[id] = body
         }
-        item.optString("audio").takeIf { it.isNotBlank() }?.let { audio ->
+        envelope.audioBase64.takeIf { it.isNotBlank() }?.let { audio ->
             put(bubble, linkButton("播放语音留言").apply {
-                setOnClickListener { stopReplay(); nearbyPanel.play(audio, pttHint) }
+                setOnClickListener { stopReplay(); commFallback.play(audio, pttHint) }
             }, 5)
         }
-        item.optString("photo").takeIf { it.isNotBlank() }?.let { photo ->
+        envelope.photoBase64?.takeIf { it.isNotBlank() }?.let { photo ->
             put(bubble, linkButton("查看定向照片").apply {
                 setOnClickListener {
-                    val bitmap = runCatching { decodeNearbyPhoto(java.util.Base64.getDecoder().decode(photo)) }.getOrNull()
+                    val bitmap = runCatching {
+                        commGateway.decodePrivatePhoto(java.util.Base64.getDecoder().decode(photo))
+                    }.getOrNull()
                     if (bitmap != null) {
                         val image = ImageView(this@MainActivity).apply {
                             adjustViewBounds = true
@@ -2788,20 +2795,21 @@ class MainActivity : Activity() {
                 }
             }, 5)
         }
-        if (mine && item.optBoolean("needs_receipt")) {
-            val readers = item.optString("read_by")
-            val count = item.optInt("read_count")
+        if (mine && envelope.needsReadReceipt) {
+            val readers = envelope.readByNames.joinToString("、")
+            val count = envelope.readByNames.size
             put(bubble, text(if (count == 0) "未读" else "$count 人已读 · $readers", 12,
                 if (count == 0) ACCENT else ONLINE), 3)
         }
         if (mine) {
-            val (status, color) = when (item.optString("delivery")) {
-                NearbyDelivery.EXPIRED.name -> "已过期" to SEND_ERROR
-                NearbyDelivery.DELIVERED.name -> "组员已收到" to ONLINE
-                NearbyDelivery.AWAITING_RECEIPT.name -> "已发出 · 等回执" to ACCENT
-                else -> "待发送" to MUTED
+            val (status, color) = when (envelope.deliveryState) {
+                CommDeliveryState.EXPIRED -> "已过期" to SEND_ERROR
+                CommDeliveryState.DELIVERED, CommDeliveryState.SYNCED -> "组员已收到" to ONLINE
+                CommDeliveryState.AWAITING_RECEIPT -> "已发出 · 等回执" to ACCENT
+                CommDeliveryState.FAILED, CommDeliveryState.CONFLICT -> "发送待核对" to SEND_ERROR
+                CommDeliveryState.PENDING, CommDeliveryState.QUEUED -> "待发送" to MUTED
             }
-            val sync = if (item.optBoolean("synced")) " · 指挥台已同步" else ""
+            val sync = if (envelope.syncedToServer) " · 指挥台已同步" else ""
             put(bubble, text(status + sync, 12, color), 3)
         }
     }
@@ -2887,7 +2895,7 @@ class MainActivity : Activity() {
     }
 
     private fun playOriginal(trackSid: String) {
-        if (voiceState in setOf(VoiceState.REQUESTING, VoiceState.SPEAKING)) return
+        if (voiceState in setOf(PttPhase.REQUESTING, PttPhase.SPEAKING)) return
         val connected = client ?: return
         val selected = eventId ?: return
         val target = radio
@@ -2963,7 +2971,7 @@ class MainActivity : Activity() {
 
     private fun updateRadioSelection() {
         val allowed = groups().map(::RadioTarget)
-        if (radio != null && !channelVoice().optBoolean("enabled", true) && voiceState != VoiceState.OFFLINE)
+        if (radio != null && !channelVoice().optBoolean("enabled", true) && voiceState != PttPhase.OFFLINE)
             disconnectVoice("行动语音已结束")
         if (radio == null || allowed.none { it.id == radio?.id }) {
             if (radio != null) {
@@ -2991,13 +2999,9 @@ class MainActivity : Activity() {
     }
 
     private fun selectNearbyChannel() {
-        val active = client
-        val event = eventId
-        val target = radio?.takeIf { it.kind == "group" }
-        nearbyPanel.select(if (active?.bound == true && event != null && target != null)
-            NearbyPanel.Area(active.localSessionKey, event, target.id, target.name) else null)
-        val key = if (active?.bound == true && event != null && target != null)
-            nearbyScope(active.localSessionKey, event, target.id) else null
+        val nextScope = activeCommScope()
+        commFallback.select(nextScope)
+        val key = nextScope?.nearbyScopeKey?.takeIf { it.isNotEmpty() }
         if (key != channelComposerScope && ::channelText.isInitialized) {
             saveChannelDraft()
             setChannelEditorOpen(false)
@@ -3006,7 +3010,6 @@ class MainActivity : Activity() {
             channelPhoto = null
             clearChannelMediaDraft()
             channelDraftKey = key
-            privateContent.clear()
             channelText.setText(channelDrafts[key].orEmpty())
         }
         updateChannelComposer()
@@ -3382,33 +3385,30 @@ class MainActivity : Activity() {
         if (value.isBlank()) channelDrafts.remove(key) else channelDrafts[key] = value
     }
 
-    private fun currentNearbyCredential(): NearbyConfig? = NearbyService.channelCredential.value
-        ?.takeIf { it.scope == channelComposerScope && it.live() }
-
     private fun chooseChannelRecipient() {
-        val config = currentNearbyCredential() ?: return
-        val recipients = config.recipients.filter { it.actor != config.actor }.sortedBy { it.name }
+        val currentScope = activeCommScope() ?: return
+        val recipients = commGateway.availableRecipients(currentScope)
         val roster = currentChannel()?.optJSONArray("members")?.objects().orEmpty()
         val labels = listOf("整个频道") + recipients.map { member ->
-            val callsign = roster.firstOrNull { it.optString("actor") == member.actor }?.optString("callsign")
-            listOfNotNull(member.name, callsign?.takeIf { it.isNotBlank() && it != member.name })
+            val callsign = roster.firstOrNull { it.optString("actor") == member.actorId }?.optString("callsign")
+            listOfNotNull(member.displayName, callsign?.takeIf { it.isNotBlank() && it != member.displayName })
                 .joinToString(" · ")
         }
         if (recipients.isEmpty() && channelRecipientActor == null) {
             AlertDialog.Builder(this).setTitle("收件人")
-                .setMessage(if (config.ownAgreementKey == null) "当前服务器尚未提供定向通信密钥。"
+                .setMessage(if (!commGateway.hasDirectedEncryptionKey(currentScope)) "当前服务器尚未提供定向通信密钥。"
                     else "组员首次联网同步后会显示在这里。")
                 .setPositiveButton("关闭", null).show()
             return
         }
         AlertDialog.Builder(this).setTitle("发送给")
             .setItems(labels.toTypedArray()) { _, index ->
-                if (config.scope != channelComposerScope) return@setItems
-                val target = recipients.getOrNull(index - 1)?.actor
+                if (currentScope.nearbyScopeKey != channelComposerScope) return@setItems
+                val target = recipients.getOrNull(index - 1)?.actorId
                 if (target == channelRecipientActor) return@setItems
                 saveChannelDraft()
                 channelRecipientActor = target
-                channelDraftKey = if (target == null) config.scope else config.scope + "|" + target
+                channelDraftKey = if (target == null) currentScope.nearbyScopeKey else currentScope.nearbyScopeKey + "|" + target
                 channelPhoto = null
                 clearChannelMediaDraft()
                 channelText.setText(channelDrafts[channelDraftKey].orEmpty())
@@ -3423,9 +3423,9 @@ class MainActivity : Activity() {
             updateChannelComposer()
             return
         }
-        val config = currentNearbyCredential() ?: return
+        val currentScope = activeCommScope()?.takeIf { commGateway.isSessionReady(it) } ?: return
         val actor = channelRecipientActor ?: return
-        channelPhotoRequest = config.scope to actor
+        channelPhotoRequest = currentScope.nearbyScopeKey to actor
         try {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*")
                 .addCategory(Intent.CATEGORY_OPENABLE), NEARBY_PHOTO)
@@ -3476,17 +3476,18 @@ class MainActivity : Activity() {
         channelWrite.text = if (channelText.text.isNullOrBlank() && channelPhoto == null && channelMediaDraft == null) "写消息" else "继续写消息"
         channelEditor.visibility = if (channelEditorOpen) View.VISIBLE else View.GONE
         channelOptions.visibility = if (channelOptionsOpen) View.VISIBLE else View.GONE
-        val session = nearbyPanel.currentSession()
-        val config = currentNearbyCredential()
-        val recipient = config?.recipients?.firstOrNull { it.actor == channelRecipientActor }
-        val permission = session != null && nearbyPanel.permissionsMissing()
+        val currentScope = activeCommScope()
+        val sessionReady = commGateway.isSessionReady(currentScope)
+        val recipients = if (sessionReady) commGateway.availableRecipients(currentScope) else emptyList()
+        val recipient = recipients.firstOrNull { it.actorId == channelRecipientActor }
+        val permission = sessionReady && commFallback.permissionsMissing()
         channelRadioPermission.visibility = if (permission) View.VISIBLE else View.GONE
         channelRecipientPicker.text = when {
             channelRecipientActor == null -> "整个频道  ›"
-            recipient != null -> recipient.name + "  ›"
+            recipient != null -> recipient.displayName + "  ›"
             else -> "收件人待同步  ›"
         }
-        channelRecipientPicker.isEnabled = config != null
+        channelRecipientPicker.isEnabled = sessionReady
         channelAttach.visibility = if (recipient != null) View.VISIBLE else View.GONE
         channelAttach.text = if (channelPhoto == null) "附照片" else "移除照片"
         val canAttach = directoryData.optBoolean("channel_attachments_enabled") && channelRecipientActor == null
@@ -3496,9 +3497,10 @@ class MainActivity : Activity() {
         channelMediaAttach.text = if (channelMediaDraft == null) "添加附件" else "移除附件"
         channelMediaPreview.visibility = if (canAttach && channelMediaDraft != null) View.VISIBLE else View.GONE
         channelSend.isEnabled = !preparing && if (canAttach && channelMediaDraft != null) true
-            else session != null && (channelRecipientActor == null || recipient != null) &&
+            else sessionReady && (channelRecipientActor == null || recipient != null) &&
                 (!channelText.text.isNullOrBlank() || recipient != null && channelPhoto != null)
-        val links = NearbyService.diagnostics.value
+        val net = commGateway.networkState.value
+        val wifiPeers = net.links[CommTransportKind.WIFI_AWARE]?.peerCount ?: 0
         val hint = when {
             preparing -> "正在准备附件…"
             channelMediaDraft != null -> when {
@@ -3506,11 +3508,11 @@ class MainActivity : Activity() {
                 channelMediaDraft?.type == CHANNEL_VIDEO_TYPE -> "MP4 短影片 · " + attachmentDuration(channelMediaDraft?.durationMs ?: 0)
                 else -> "照片 · 封面预览"
             }
-            session == null -> nearbyPanel.unavailableMessage()
+            !sessionReady -> commGateway.unavailableReason()
             channelRecipientActor != null && recipient == null -> "收件人离线密钥待同步"
-            channelPhoto != null && links.wifiPeers == 0 -> "照片将等待 Wi-Fi Aware 送达"
-            links.reachablePeers == 0 && permission -> "等待附近设备权限 · 消息会排队"
-            links.reachablePeers == 0 -> "等待可达组员 · 消息会排队"
+            channelPhoto != null && wifiPeers == 0 -> "照片将等待 Wi-Fi Aware 送达"
+            net.reachablePeerCount == 0 && permission -> "等待附近设备权限 · 消息会排队"
+            net.reachablePeerCount == 0 -> "等待可达组员 · 消息会排队"
             else -> ""
         }
         channelSendStatus.text = hint
@@ -3523,28 +3525,35 @@ class MainActivity : Activity() {
             queueChannelAttachment(it)
             return
         }
-        val session = nearbyPanel.currentSession() ?: return
+        val currentScope = activeCommScope() ?: return
+        if (!commGateway.isSessionReady(currentScope)) return
         val message = channelText.text.toString().trim()
         val actor = channelRecipientActor
         val photo = channelPhoto
         if (message.isEmpty() && photo == null) return
-        try {
-            if (actor == null) {
-                check(photo == null)
-                session.send(message)
-            } else {
-                val config = checkNotNull(currentNearbyCredential())
-                val recipient = config.recipients.first { it.actor == actor }
-                val id = UUID.randomUUID().toString()
-                val envelope = NearbyPrivate.seal(config, recipient, id, message, photo)
-                session.send("", id = id, recipient = actor, sealedPayload = envelope)
+        val outbound = if (actor == null) {
+            CommOutboundMessage(
+                scope = currentScope,
+                kind = CommEnvelopeKind.CHANNEL_TEXT,
+                text = message,
+            )
+        } else {
+            CommOutboundMessage(
+                scope = currentScope,
+                kind = CommEnvelopeKind.PRIVATE_ENCRYPTED,
+                text = message,
+                photoBytes = photo,
+                recipientActor = actor,
+            )
+        }
+        when (commGateway.send(outbound)) {
+            is CommSendResult.Accepted, is CommSendResult.Queued -> {
+                channelPhoto = null
+                channelText.text.clear()
+                saveChannelDraft()
+                setChannelEditorOpen(false)
             }
-            channelPhoto = null
-            channelText.text.clear()
-            saveChannelDraft()
-            setChannelEditorOpen(false)
-        } catch (_: Exception) {
-            channelError("未发出 · 暂时无法保存，请重试")
+            is CommSendResult.Rejected -> channelError("未发出 · 暂时无法保存，请重试")
         }
     }
 
@@ -3559,33 +3568,14 @@ class MainActivity : Activity() {
         val shown = AlertDialog.Builder(this).setTitle("通信诊断").setView(panel)
             .setPositiveButton("关闭", null).create()
         fun update() {
-            val radios = NearbyService.radios.value
-            val now = NearbyService.diagnostics.value
-            val live = NearbyService.liveVoice
-            val delivered = if (now.lastDeliveryMillis == 0L) "尚无送达回执"
-                else recordTime(Instant.ofEpochMilli(now.lastDeliveryMillis).toString())
-            panel.text = buildString {
-                appendLine("可达组员  ${now.reachablePeers}")
-                appendLine("Wi-Fi Aware  ${radios[NearbyRadio.WIFI] ?: "未启用"} · ${now.wifiPeers} 人")
-                appendLine("蓝牙  ${radios[NearbyRadio.BLE] ?: "未启用"} · ${now.bluetoothPeers} 人")
-                append("最近送达  $delivered")
-                when (now.lastDeliveryRoute) {
-                    NearbyRadio.WIFI -> append(" · Wi-Fi Aware")
-                    NearbyRadio.BLE -> append(" · 蓝牙")
-                    null -> Unit
-                }
-                if (now.liveVoicePeers > 0 || live?.transmitting == true) {
-                    appendLine()
-                    if (live?.transmitting == true) append("正在附近发言")
-                    else append("支持附近实时语音  ${now.liveVoicePeers} 人")
-                }
+            panel.text = commGateway.formatDiagnostics { millis ->
+                recordTime(Instant.ofEpochMilli(millis).toString())
             }
         }
         shown.show()
         update()
         val refresh = scope.launch {
-            launch { NearbyService.radios.collect { update() } }
-            NearbyService.diagnostics.collect { update() }
+            commGateway.networkState.collect { update() }
         }
         shown.setOnDismissListener { refresh.cancel() }
     }
@@ -3597,26 +3587,23 @@ class MainActivity : Activity() {
         nearbyLastSync = now
         nearbyProvision = scope.launch {
             try {
-                val (publicKey, agreement) = withContext(Dispatchers.IO) {
-                    NearbyIdentity(active.localSessionKey).publicKey to
-                        runCatching { NearbyPrivateIdentity(this@MainActivity, active.localSessionKey).publicKey }.getOrNull()
-                }
+                val (publicKey, agreement) = commGateway.localIdentityKeys(active.localSessionKey)
                 val leases = active.nearbyCredentials(event, publicKey, agreement)
                 if (active !== client || event != eventId) return@launch
-                nearbySettings.save(active.localSessionKey, event, leases)
-                nearbyPanel.serverSupportsNearby = true
-                if (visible) nearbyPanel.resume(refresh = true)
+                commGateway.provisionCredentials(active.localSessionKey, event, leases)
+                commGateway.setServerNearbySupported(true)
+                if (visible) commFallback.resume(refresh = true)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: OpsException) {
                 if (active !== client || event != eventId) return@launch
                 if (error.status == 404) {
-                    nearbyPanel.serverSupportsNearby = false
+                    commGateway.setServerNearbySupported(false)
                     updateChannelComposer()
                 }
                 if (error.status in setOf(401, 403)) {
-                    nearbySettings.clear(active.localSessionKey, event)
-                    NearbyService.stop(this@MainActivity)
+                    commGateway.clearCredentials(active.localSessionKey, event)
+                    commGateway.refresh(forceRestart = true)
                 }
             } catch (_: Exception) {
                 // Keep the previously issued, unexpired lease on a transient failure.
@@ -3669,7 +3656,7 @@ class MainActivity : Activity() {
         val allowed = groups().filter { it.optString("kind") == "group" }
         val term = channelSearch.text.toString().trim()
         val filtered = allowed.filter { it.optString("name").contains(term, ignoreCase = true) }
-        val listening = voiceState in setOf(VoiceState.LISTENING, VoiceState.REQUESTING, VoiceState.SPEAKING)
+        val listening = voiceState in setOf(PttPhase.LISTENING, PttPhase.REQUESTING, PttPhase.SPEAKING)
         val canVoice = voiceConfigured()
         val canCall = client?.privateCallsEnabled == true
         val key = listOf(filtered, radio?.id, listening, canVoice, canCall, workspaceOnline, term, eventId).toString()
@@ -3733,7 +3720,7 @@ class MainActivity : Activity() {
             showSection(Section.LIVE)
             return
         }
-        val moveListening = voiceState != VoiceState.OFFLINE
+        val moveListening = voiceState != PttPhase.OFFLINE
         if (target.kind == "direct" && radio?.kind == "group") groupBeforeDirect = radio
         load?.cancel()
         historyJob?.cancel()
@@ -4160,8 +4147,8 @@ class MainActivity : Activity() {
         disconnectVideo()
         stopReplay()
         val (body, status) = callPanel(session.peer, "", "正在接通…")
-        val remote = if (session.video) TextureViewRenderer(this) else null
-        val local = if (session.video) TextureViewRenderer(this) else null
+        val remote = if (session.video) LiveKitMediaFactory.createVideoSurface(this) else null
+        val local = if (session.video) LiveKitMediaFactory.createVideoSurface(this) else null
         if (remote != null && local != null) {
             val frame = FrameLayout(this).apply { setBackgroundColor(BACKGROUND) }
             frame.addView(remote, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -4175,7 +4162,7 @@ class MainActivity : Activity() {
         callDialog = dialog
         dialog.setOnDismissListener { if (conference === session) finishConference() }
         dialog.show()
-        callMedia = ConferenceMedia(this, scope, session.client, session.event, session.id, session.video, remote, local,
+        callMedia = LiveKitMediaFactory.createConference(this, scope, session.client, session.event, session.id, session.video, remote, local,
             status = { status.text = it },
             failed = {
                 if (conference === session) {
@@ -4814,9 +4801,9 @@ class MainActivity : Activity() {
         val selected = eventId ?: return
         val connected = client ?: return
         if (!canUseVideo() || video != null) return
-        val renderer = TextureViewRenderer(this).apply { contentDescription = "现场视频" }
+        val renderer = LiveKitMediaFactory.createVideoSurface(this, "现场视频")
         videoFrame.addView(renderer, FrameLayout.LayoutParams(MATCH, MATCH))
-        val next = VideoChannel(this, renderer, scope, connected, selected, BuildConfig.DEBUG, radio) { state ->
+        val next = LiveKitMediaFactory.createVideoChannel(this, renderer, scope, connected, selected, BuildConfig.DEBUG, radio) { state ->
             if (state.failed) {
                 startCameraOnConnect = false
                 video = null
@@ -4840,11 +4827,11 @@ class MainActivity : Activity() {
         video = null
         if (::videoCard.isInitialized) {
             videoFrame.removeAllViews()
-            updateVideo(VideoState(VIDEO_IDLE_TEXT))
+            updateVideo(VideoChannelState(VIDEO_IDLE_TEXT))
         }
     }
 
-    private fun updateVideo(state: VideoState) {
+    private fun updateVideo(state: VideoChannelState) {
         videoState = state
         videoLabel.text = if (startCameraOnConnect) "正在连接，随后开启相机…" else state.text
         videoFrame.visibility = if (state.showingTrack) View.VISIBLE else View.GONE
@@ -4906,9 +4893,12 @@ class MainActivity : Activity() {
             messages = messages.filterNot { it.optString("id") == result.getString("id") } + result
             val active = client
             val channel = item.parameters.optString("nearby_channel")
-            if (active != null && channel.isNotEmpty() &&
-                NearbyService.activeScope == nearbyScope(active.localSessionKey, item.event, channel))
-                runCatching { NearbyService.session.value?.syncAssistance(item.id) }
+            if (active != null && channel.isNotEmpty()) {
+                val targetScope = CommScope(item.event, channel, "", "group", active.localSessionKey)
+                if (commGateway.isSessionReady(targetScope)) {
+                    runCatching { commGateway.markAssistanceSynced(targetScope, item.id) }
+                }
+            }
         } else rememberReceipt(result)
         fieldOffline.complete(item)
     }
@@ -4916,10 +4906,19 @@ class MainActivity : Activity() {
     private fun shareAssistance(active: OpsClient, item: FieldOfflineStore.Queued): Boolean {
         val channel = item.parameters.optString("nearby_channel")
         if (item.action != HELP || channel.isBlank()) return false
-        if (NearbyService.activeScope != nearbyScope(active.localSessionKey, item.event, channel)) return false
-        val local = NearbyService.session.value ?: return false
+        val targetScope = CommScope(item.event, channel, "", "group", active.localSessionKey)
+        if (!commGateway.isSessionReady(targetScope)) return false
         val note = item.parameters.optString("note").ifBlank { "现场需要协助" }
-        return runCatching { local.send(note, assistance = true, id = item.id) }.isSuccess
+        val result = commGateway.send(
+            CommOutboundMessage(
+                id = item.id,
+                scope = targetScope,
+                kind = CommEnvelopeKind.ASSISTANCE_ALERT,
+                text = note,
+                assistance = true,
+            ),
+        )
+        return result !is CommSendResult.Rejected
     }
 
     private fun retryable(error: Exception) = when (error) {
@@ -4951,6 +4950,7 @@ class MainActivity : Activity() {
             } catch (error: Exception) {
                 if (retryable(error) || error is OpsException && error.status == 401) {
                     workspaceOnline = false
+                commGateway.setServerReachable(false)
                     "本机已保存 · 待同步"
                 } else {
                     fieldOffline.conflict(entry, errorMessage(error))
@@ -5046,7 +5046,7 @@ class MainActivity : Activity() {
         restoreRadioAfterCall = false
         val session = client
         nearbyProvision?.cancel()
-        nearbyPanel.select(null)
+        commFallback.select(null)
         channelDraftKey = null
         channelComposerScope = null
         channelRecipientActor = null
@@ -5055,11 +5055,9 @@ class MainActivity : Activity() {
         clearChannelMediaDraft()
         channelUploadJob?.cancel()
         pendingChannelAttachments = emptyList()
-        privateReader = null
-        privateContent.clear()
         channelDrafts.clear()
         if (session != null) events.forEach { event ->
-            runCatching { nearbySettings.clear(session.localSessionKey, event.getString("id")) }
+            runCatching { commGateway.clearCredentials(session.localSessionKey, event.getString("id")) }
         }
         disconnectVoice("已退出频道")
         disconnectVideo()
@@ -5150,13 +5148,13 @@ class MainActivity : Activity() {
             localVoiceClips = (snapshot.localClips + localVoiceClips).distinctBy { it.trackSid }.take(16)
         if (joinedHere) snapshot.lastHeard?.let { lastHeard = it }
         if (joinedHere) {
-            if (snapshot.phase == VoiceState.LISTENING) {
+            if (snapshot.phase == PttPhase.LISTENING) {
                 onlineVoiceRequested = true
                 onlineVoiceEverJoined = true
             }
             updateVoice(snapshot.phase, snapshot.message)
         }
-        else updateVoice(VoiceState.OFFLINE, if (snapshot.workspace == null) snapshot.message else "未加入频道")
+        else updateVoice(PttPhase.OFFLINE, if (snapshot.workspace == null) snapshot.message else "未加入频道")
         val latestChanged = previousSpeaker != remoteSpeaker || previousHeard != lastHeard
         if (latestChanged || previousClips != localVoiceClips) renderConversation()
         if (joinedHere && latestChanged && remoteSpeaker == null && archiveEnabled && visible && hasWorkspace && load?.isActive != true) {
@@ -5169,36 +5167,36 @@ class MainActivity : Activity() {
         onlineVoiceEverJoined = false
         voiceService?.leave(message)
         remoteSpeaker = null
-        if (::voiceLabel.isInitialized) updateVoice(VoiceState.OFFLINE, message)
+        if (::voiceLabel.isInitialized) updateVoice(PttPhase.OFFLINE, message)
     }
 
     private fun nearbyVoiceFallback() = Build.VERSION.SDK_INT >= 29 && client?.bound == true &&
         radio?.kind == "group" && channelVoice().optBoolean("enabled", true) && section == Section.LIVE &&
-        voiceState in setOf(VoiceState.OFFLINE, VoiceState.CONNECTING) &&
-        (!workspaceOnline || (onlineVoiceRequested && (onlineVoiceEverJoined || voiceState == VoiceState.OFFLINE)))
+        voiceState in setOf(PttPhase.OFFLINE, PttPhase.CONNECTING) &&
+        (!workspaceOnline || (onlineVoiceRequested && (onlineVoiceEverJoined || voiceState == PttPhase.OFFLINE)))
 
-    private fun updateVoice(state: VoiceState, message: String) {
+    private fun updateVoice(state: PttPhase, message: String) {
         voiceState = state
         val available = voiceAvailable()
-        val joined = available && state in setOf(VoiceState.LISTENING, VoiceState.REQUESTING, VoiceState.SPEAKING)
+        val joined = available && state in setOf(PttPhase.LISTENING, PttPhase.REQUESTING, PttPhase.SPEAKING)
         voiceLabel.text = message
         val sendingTail = message.startsWith("正在发送尾音")
-        joinButton.visibility = if (state == VoiceState.OFFLINE && available) View.VISIBLE else View.GONE
-        joinButton.isEnabled = voiceService != null && available && state == VoiceState.OFFLINE
-        leaveButton.visibility = if (state == VoiceState.OFFLINE) View.GONE else View.VISIBLE
-        leaveButton.text = if (state == VoiceState.CONNECTING) "取消连接" else "离开语音"
+        joinButton.visibility = if (state == PttPhase.OFFLINE && available) View.VISIBLE else View.GONE
+        joinButton.isEnabled = voiceService != null && available && state == PttPhase.OFFLINE
+        leaveButton.visibility = if (state == PttPhase.OFFLINE) View.GONE else View.VISIBLE
+        leaveButton.text = if (state == PttPhase.CONNECTING) "取消连接" else "离开语音"
         channelMute.visibility = if (joined) View.VISIBLE else View.GONE
         channelMute.text = if (channelReceiveMuted) "取消静音" else "静音"
         val fallback = nearbyVoiceFallback()
         pttButton.isEnabled = fallback || available && voiceService != null && joined && !sendingTail
         pttButton.text = when (state) {
-            VoiceState.REQUESTING -> "按住说话"
-            VoiceState.SPEAKING -> if (sendingTail) "正在发送尾音…" else "松开结束"
+            PttPhase.REQUESTING -> "按住说话"
+            PttPhase.SPEAKING -> if (sendingTail) "正在发送尾音…" else "松开结束"
             else -> if (fallback) "按住录离线留言" else "按住说话 · PTT"
         }
         pttButton.contentDescription = when (state) {
-            VoiceState.REQUESTING -> "正在接通，可以说话，松开取消"
-            VoiceState.SPEAKING -> "正在发言，松开结束"
+            PttPhase.REQUESTING -> "正在接通，可以说话，松开取消"
+            PttPhase.SPEAKING -> "正在发言，松开结束"
             else -> when {
                 fallback -> "按住录离线留言，松开发送"
                 joined -> "按住说话，松开结束"
@@ -5207,7 +5205,7 @@ class MainActivity : Activity() {
         }
         volumeControlStream = if (joined) AudioManager.STREAM_VOICE_CALL else AudioManager.USE_DEFAULT_STREAM_TYPE
         pttButton.backgroundTintList = ColorStateList.valueOf(
-            if (!pttButton.isEnabled) CARD_BORDER else if (state == VoiceState.SPEAKING) ACCENT else ACTIVE
+            if (!pttButton.isEnabled) CARD_BORDER else if (state == PttPhase.SPEAKING) ACCENT else ACTIVE
         )
         pttButton.setTextColor(if (pttButton.isEnabled) ON_ACCENT else MUTED)
         renderSpeaker()
@@ -5216,11 +5214,11 @@ class MainActivity : Activity() {
     }
 
     private fun renderSpeaker() {
-        val speaker = remoteSpeaker?.takeUnless { voiceState in setOf(VoiceState.OFFLINE, VoiceState.SPEAKING) }
+        val speaker = remoteSpeaker?.takeUnless { voiceState in setOf(PttPhase.OFFLINE, PttPhase.SPEAKING) }
         val available = voiceAvailable()
         speakerLabel.text = speaker?.let { "${it.name} 正在发言" } ?: when (voiceState) {
-            VoiceState.REQUESTING -> "申请话权"
-            VoiceState.SPEAKING -> "发言中"
+            PttPhase.REQUESTING -> "申请话权"
+            PttPhase.SPEAKING -> "发言中"
             else -> "收听中"
         }
         channelConnection.text = if (!available) {
@@ -5230,13 +5228,13 @@ class MainActivity : Activity() {
                 else -> "语音未开启"
             }
         } else when (voiceState) {
-            VoiceState.OFFLINE -> "语音就绪"
-            VoiceState.CONNECTING -> "连接中"
-            VoiceState.LISTENING -> if (channelReceiveMuted) "已静音" else "收听中"
-            VoiceState.REQUESTING -> "申请话权"
-            VoiceState.SPEAKING -> "发言中"
+            PttPhase.OFFLINE -> "语音就绪"
+            PttPhase.CONNECTING -> "连接中"
+            PttPhase.LISTENING -> if (channelReceiveMuted) "已静音" else "收听中"
+            PttPhase.REQUESTING -> "申请话权"
+            PttPhase.SPEAKING -> "发言中"
         }
-        channelConnection.setTextColor(if (voiceState == VoiceState.LISTENING || voiceState == VoiceState.SPEAKING) ONLINE else MUTED)
+        channelConnection.setTextColor(if (voiceState == PttPhase.LISTENING || voiceState == PttPhase.SPEAKING) ONLINE else MUTED)
         channelState.text = when {
             client?.bound == true && radio == null -> when {
                 directoryData.has("channels") -> "暂无分配的频道"
@@ -5246,17 +5244,17 @@ class MainActivity : Activity() {
             radio?.kind == "direct" -> "从私呼联系人发起通话"
             !voiceConfigured() -> "服务器未启用实时对讲"
             !available -> "行动语音尚未开启"
-            voiceState == VoiceState.OFFLINE && voiceLabel.text.toString() in setOf("", "未加入频道", "已退出频道") -> ""
+            voiceState == PttPhase.OFFLINE && voiceLabel.text.toString() in setOf("", "未加入频道", "已退出频道") -> ""
             speaker != null -> "${speaker.name} 正在发言"
-            voiceState == VoiceState.LISTENING -> ""
-            voiceState == VoiceState.SPEAKING -> "$callsign 正在发言"
+            voiceState == PttPhase.LISTENING -> ""
+            voiceState == PttPhase.SPEAKING -> "$callsign 正在发言"
             else -> voiceLabel.text
         }
         pttHint.text = when {
             nearbyVoiceFallback() -> "附近离线 · 松开发送语音留言"
-            voiceState == VoiceState.SPEAKING -> voiceLabel.text
-            voiceState == VoiceState.REQUESTING -> voiceLabel.text
-            voiceState == VoiceState.CONNECTING -> "正在加入频道"
+            voiceState == PttPhase.SPEAKING -> voiceLabel.text
+            voiceState == PttPhase.REQUESTING -> voiceLabel.text
+            voiceState == PttPhase.CONNECTING -> "正在加入频道"
             pttButton.isEnabled -> ""
             available -> "加入频道后可发言"
             else -> "频道就绪后可发言"
@@ -5266,7 +5264,7 @@ class MainActivity : Activity() {
     private fun updateBottomControls() {
         val workspaceVisible = client != null && !keyboardVisible
         val radioPage = section == Section.LIVE
-        val joined = voiceAvailable() && voiceState in setOf(VoiceState.LISTENING, VoiceState.REQUESTING, VoiceState.SPEAKING)
+        val joined = voiceAvailable() && voiceState in setOf(PttPhase.LISTENING, PttPhase.REQUESTING, PttPhase.SPEAKING)
         voiceDock.visibility = if (workspaceVisible && ((radioPage && voiceAvailable()) || joined || nearbyVoiceFallback()))
             View.VISIBLE else View.GONE
         if (::dockSummary.isInitialized) {
@@ -5331,11 +5329,11 @@ class MainActivity : Activity() {
             .setNegativeButton("关闭", null).show()
     }
 
-    private fun playHapticCue(cue: VoiceCue) {
+    private fun playHapticCue(cue: PttCue) {
         if (!::pttButton.isInitialized) return
         val feedback = when (cue) {
-            VoiceCue.ENDED -> HapticFeedbackConstants.KEYBOARD_TAP
-            VoiceCue.BUSY -> HapticFeedbackConstants.REJECT
+            PttCue.ENDED -> HapticFeedbackConstants.KEYBOARD_TAP
+            PttCue.BUSY -> HapticFeedbackConstants.REJECT
         }
         pttButton.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) feedback else HapticFeedbackConstants.KEYBOARD_TAP)
     }
@@ -5347,7 +5345,7 @@ class MainActivity : Activity() {
     }
 
     private fun startPress() {
-        if (!visible || !hasWindowFocus() || voiceState != VoiceState.LISTENING) return
+        if (!visible || !hasWindowFocus() || voiceState != PttPhase.LISTENING) return
         stopReplay()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             pttButton.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -5508,7 +5506,7 @@ class MainActivity : Activity() {
         val receiptScope: ReceiptScope?,
         val taskFilter: TaskStage,
         val taskDetailKey: String?,
-        val lastHeard: VoiceSpeaker?,
+        val lastHeard: PttSpeaker?,
         val radio: RadioTarget?,
         val groupBeforeDirect: RadioTarget?,
         val directory: JSONObject,
