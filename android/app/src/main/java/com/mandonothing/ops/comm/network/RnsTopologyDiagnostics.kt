@@ -8,6 +8,7 @@ import com.mandonothing.ops.comm.CommTransportKind
 import com.mandonothing.ops.comm.aware.RnsBridgeLinkMetrics
 import com.mandonothing.ops.comm.aware.RnsRadioKind
 import com.mandonothing.ops.comm.rns.RnsCoreEvent
+import com.mandonothing.ops.comm.rns.RnsCoreMultiHopTelemetry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -139,10 +140,32 @@ internal class RnsTopologyDiagnostics(
                     )
                 }
 
-                is RnsCoreEvent.DeliveryUpdated -> Unit
+                is RnsCoreEvent.DeliveryUpdated,
+                is RnsCoreEvent.PttFrameReceived,
+                is RnsCoreEvent.PttFloorEvent,
+                -> Unit
             }
             publishLocked()
         }
+    }
+
+    /** Convenience overload ingesting [RnsCoreMultiHopTelemetry] from [RnsCoreEngine]. */
+    fun ingestCoreTelemetry(telemetry: RnsCoreMultiHopTelemetry, nowMs: Long = clockMs()) {
+        ingestMultiHopTelemetry(
+            lastLinkRttMs = telemetry.lastLinkRttMs,
+            remoteRoutes = telemetry.routes.map { r ->
+                RnsRemoteRouteTelemetry(
+                    destinationHashHex = r.destinationHashHex,
+                    hops = r.hops,
+                    nextHopHex = r.nextHopHex,
+                    learnedAtMs = r.learnedAtMs,
+                    lastActivityAtMs = r.lastActivityAtMs,
+                    expiresAtMs = r.expiresAtMs,
+                    interfaceTag = r.interfaceTag,
+                )
+            },
+            nowMs = nowMs,
+        )
     }
 
     /** Records an explicit multi-hop route discovered via relay or announce table. */

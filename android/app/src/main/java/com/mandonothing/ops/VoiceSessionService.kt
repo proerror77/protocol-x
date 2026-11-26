@@ -26,6 +26,13 @@ import com.mandonothing.ops.comm.PttPhase
 import com.mandonothing.ops.comm.PttSessionTransport
 import com.mandonothing.ops.comm.PttSpeaker
 import com.mandonothing.ops.comm.PttTransportMode
+import com.mandonothing.ops.comm.network.RnsNetworkManager
+import com.mandonothing.ops.comm.ptt.RnsPttHandoffCoordinator
+import com.mandonothing.ops.comm.ptt.RnsPttSessionTransport
+import com.mandonothing.ops.comm.ptt.RnsPttTransportBridge
+import com.mandonothing.ops.comm.rns.RnsCoreEvent
+import com.mandonothing.ops.comm.rns.RnsCorePttBridge
+import com.mandonothing.ops.comm.rns.RnsRuntimeService
 import com.twilio.audioswitch.AudioDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +42,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -80,6 +88,14 @@ class VoiceSessionService : Service() {
     internal val state = mutableState.asStateFlow()
     internal val cues = mutableCues.asSharedFlow()
     private var transport: PttSessionTransport? = null
+    private var handoffCoordinator: RnsPttHandoffCoordinator? = null
+    private var handoffJob: Job? = null
+    private var pttInboundJob: Job? = null
+    @Volatile private var handoffSwitching = false
+    private var rnsNetworkManager: RnsNetworkManager? = null
+    private var rnsPttBridge: RnsPttTransportBridge? = null
+    private var rnsPttFrames: SharedFlow<RnsCoreEvent.PttFrameReceived>? = null
+    private var rnsPttFloorEvents: SharedFlow<RnsCoreEvent.PttFloorEvent>? = null
     internal var pttTransportFactory: ((VoiceWorkspace, Int) -> PttSessionTransport)? = null
     internal var onReceiveMuteChanged: ((String, Boolean) -> Unit) = { channelId, muted ->
         NearbyService.setReceiveMuted(channelId, muted)
@@ -157,6 +173,18 @@ class VoiceSessionService : Service() {
 
     internal fun attachUi(owner: Any) {
         uiOwner = owner
+    }
+
+    internal fun attachRnsCoordination(
+        networkManager: RnsNetworkManager?,
+        pttBridge: RnsPttTransportBridge?,
+        inboundFrames: SharedFlow<RnsCoreEvent.PttFrameReceived>?,
+        inboundFloor: SharedFlow<RnsCoreEvent.PttFloorEvent>?,
+    ) {
+        rnsNetworkManager = networkManager
+        rnsPttBridge = pttBridge
+        rnsPttFrames = inboundFrames
+        rnsPttFloorEvents = inboundFloor
     }
 
     internal fun detachUi(owner: Any) {
@@ -343,9 +371,97 @@ class VoiceSessionService : Service() {
             },
         )
 
+    private fun createRnsPttTransport(
+        workspace: VoiceWorkspace,
+        activeGeneration: Int,
+        bridge: RnsPttTransportBridge,
+    ): RnsPttSessionTransport =
+        RnsPttSessionTransport.create(
+            context = applicationContext,
+            channelId = workspace.target?.id ?: workspace.eventId,
+            localDisplayName = workspace.callsign,
+            bridge = bridge,
+            priority = if (workspace.role == "dispatcher") 2 else 1,
+            onSpeaker = { speaker ->
+                if (generation == activeGeneration && !handoffSwitching) {
+                    val current = mutableState.value
+                    mutableState.value = current.copy(speaker = speaker, lastHeard = speaker ?: current.lastHeard)
+                }
+            },
+            onOutput = { output ->
+                if (generation == activeGeneration && !handoffSwitching) {
+                    mutableState.value = mutableState.value.copy(output = output)
+                    notifyStatus()
+                }
+            },
+            onClip = { clip -> handleClip(workspace, activeGeneration, clip) },
+            onCue = ::playCue,
+            onState = { phase, message ->
+                if (generation == activeGeneration && !handoffSwitching) onChannelState(workspace, phase, message)
+            },
+        )
+
     private fun connect(workspace: VoiceWorkspace) {
         val activeGeneration = ++generation
-        val next = pttTransportFactory?.invoke(workspace, activeGeneration)
+        handoffJob?.cancel()
+        pttInboundJob?.cancel()
+        handoffCoordinator?.close()
+        handoffCoordinator = null
+
+        val customFactory = pttTransportFactory
+        val netMgr = rnsNetworkManager
+        val bridge = rnsPttBridge ?: RnsRuntimeService.pttBridge
+        if (customFactory == null && netMgr != null && bridge != null && workspace.target != null) {
+            val handoff = RnsPttHandoffCoordinator(
+                liveKitFactory = { createDefaultPttTransport(workspace, activeGeneration) },
+                rnsPttFactory = { createRnsPttTransport(workspace, activeGeneration, bridge) },
+            )
+            handoffCoordinator = handoff
+            handoffSwitching = true
+            val initial = handoff.reconcile(netMgr.state.value)
+            handoffSwitching = false
+            transport = initial
+            mutableState.value = mutableState.value.copy(
+                receiveMuted = initial.receiveMuted,
+                transportMode = initial.mode,
+            )
+            handoffJob = scope.launch {
+                netMgr.state.collect { state ->
+                    if (generation != activeGeneration) return@collect
+                    val current = handoff.currentTransport()
+                    if (current != null && (state.shouldUseLiveKitPtt == (current.mode == PttTransportMode.LIVEKIT))) {
+                        return@collect
+                    }
+                    handoffSwitching = true
+                    val next = handoff.reconcile(state)
+                    handoffSwitching = false
+                    transport = next
+                    mutableState.value = mutableState.value.copy(
+                        receiveMuted = next.receiveMuted,
+                        transportMode = next.mode,
+                    )
+                }
+            }
+            val framesFlow = rnsPttFrames ?: RnsRuntimeService.pttFrames
+            val floorFlow = rnsPttFloorEvents ?: RnsRuntimeService.pttFloorEvents
+            pttInboundJob = scope.launch {
+                launch {
+                    framesFlow.collect { frameEvent ->
+                        if (generation != activeGeneration) return@collect
+                        val rnsTransport = transport as? RnsPttSessionTransport ?: return@collect
+                        rnsTransport.onInboundFrame(RnsCorePttBridge.toPttFrame(frameEvent))
+                    }
+                }
+                floorFlow.collect { floorEvent ->
+                    if (generation != activeGeneration) return@collect
+                    val rnsTransport = transport as? RnsPttSessionTransport ?: return@collect
+                    rnsTransport.onInboundFloorControl(RnsCorePttBridge.toFloorControl(floorEvent))
+                }
+            }
+            return
+        }
+
+        val next = customFactory?.invoke(workspace, activeGeneration)
             ?: createDefaultPttTransport(workspace, activeGeneration)
         transport = next
         mutableState.value = mutableState.value.copy(
@@ -471,6 +587,14 @@ class VoiceSessionService : Service() {
         retry = null
         nextRetry = 0
         hasJoined = false
+        handoffJob?.cancel()
+        handoffJob = null
+        pttInboundJob?.cancel()
+        pttInboundJob = null
+        handoffSwitching = true
+        handoffCoordinator?.close()
+        handoffCoordinator = null
+        handoffSwitching = false
         transport?.close()
         transport = null
         tone?.release()

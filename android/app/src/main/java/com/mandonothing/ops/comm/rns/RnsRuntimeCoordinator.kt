@@ -32,11 +32,17 @@ internal class RnsRuntimeCoordinator(
     private val mutablePeers = MutableStateFlow<List<RnsPeerRecord>>(emptyList())
     private val mutableIfacPolicy = MutableStateFlow<RnsIfacPolicy?>(null)
     private val mutableGatewayReceipts = MutableSharedFlow<JSONObject>(extraBufferCapacity = 32)
+    private val mutableCoreEvents = MutableSharedFlow<RnsCoreEvent>(extraBufferCapacity = 64)
+    private val mutablePttFrames = MutableSharedFlow<RnsCoreEvent.PttFrameReceived>(extraBufferCapacity = 128)
+    private val mutablePttFloorEvents = MutableSharedFlow<RnsCoreEvent.PttFloorEvent>(extraBufferCapacity = 32)
     private val resourceManager = RnsResourceTransferManager(store, clockMs = clockMs)
     private var activeConfig: RnsRuntimeConfig? = null
     private var activeLease: RnsIfacLease? = null
     private val revokedHashes = mutableSetOf<String>()
     private val revokedActors = mutableSetOf<String>()
+
+    var onIfacRotated: ((RnsIfacLease) -> Unit)? = null
+    var onPeerRevoked: ((String?, String?) -> Unit)? = null
 
     val snapshot: StateFlow<RnsRuntimeSnapshot> = mutableSnapshot.asStateFlow()
     val inboundMessages: StateFlow<List<LxmfInboundRecord>> = mutableInbound.asStateFlow()
@@ -44,6 +50,13 @@ internal class RnsRuntimeCoordinator(
     val peers: StateFlow<List<RnsPeerRecord>> = mutablePeers.asStateFlow()
     val ifacPolicy: StateFlow<RnsIfacPolicy?> = mutableIfacPolicy.asStateFlow()
     val gatewayReceipts: SharedFlow<JSONObject> = mutableGatewayReceipts.asSharedFlow()
+    val coreEvents: SharedFlow<RnsCoreEvent> = mutableCoreEvents.asSharedFlow()
+    val pttFrames: SharedFlow<RnsCoreEvent.PttFrameReceived> = mutablePttFrames.asSharedFlow()
+    val pttFloorEvents: SharedFlow<RnsCoreEvent.PttFloorEvent> = mutablePttFloorEvents.asSharedFlow()
+
+    internal fun activeEngine(): RnsCoreEngine = engine
+    internal fun currentConfig(): RnsRuntimeConfig? = activeConfig
+    internal fun currentLease(): RnsIfacLease? = activeLease
 
     fun start(config: RnsRuntimeConfig): Boolean = synchronized(lock) {
         val persistedLease = store.loadIfacLease(config.eventId, config.channelId)?.takeIf { it.isLive(clockMs()) }
@@ -99,6 +112,7 @@ internal class RnsRuntimeCoordinator(
             val appData = effectiveConfig.actorId.ifBlank { effectiveConfig.channelId }.toByteArray(Charsets.UTF_8)
             runCatching { engine.announce(appData) }
             runCatching { engine.announceLxmf(effectiveConfig.lxmfDisplayName ?: effectiveConfig.actorId.ifBlank { null }) }
+            runCatching { engine.announcePtt() }
             runCatching {
                 engine.persistedLxmfMessages().forEach { handleCoreEvent(it) }
                 engine.persistedLxmfReceipts().forEach { handleCoreEvent(it) }
@@ -145,6 +159,7 @@ internal class RnsRuntimeCoordinator(
                     runCatching { engine.revokePeer(hash, "ifac_rotation") }
                 }
             }
+            onIfacRotated?.invoke(lease)
         }
     }
 
@@ -156,6 +171,7 @@ internal class RnsRuntimeCoordinator(
             if (engine.isAvailable) runCatching { engine.revokePeer(norm, "revoked") }
         }
         if (!actorId.isNullOrBlank()) revokedActors += actorId
+        onPeerRevoked?.invoke(actorId, deviceOrIdentityHash)
     }
 
     fun isPeerRevoked(hashOrActor: String): Boolean = synchronized(lock) {
@@ -265,6 +281,7 @@ internal class RnsRuntimeCoordinator(
         store.allOutbox(accountKey, eventId)
 
     fun handleCoreEvent(event: RnsCoreEvent) {
+        mutableCoreEvents.tryEmit(event)
         when (event) {
             is RnsCoreEvent.AnnounceHeard -> {
                 val peer = RnsPeerRecord(
@@ -370,6 +387,18 @@ internal class RnsRuntimeCoordinator(
             }
 
             is RnsCoreEvent.PeerLinkChanged -> refreshCurrentSnapshot()
+
+            is RnsCoreEvent.PttFrameReceived -> {
+                if (!isPeerRevoked(event.senderHashHex)) {
+                    mutablePttFrames.tryEmit(event)
+                }
+            }
+
+            is RnsCoreEvent.PttFloorEvent -> {
+                if (!isPeerRevoked(event.actorHashHex)) {
+                    mutablePttFloorEvents.tryEmit(event)
+                }
+            }
         }
     }
 

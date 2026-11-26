@@ -36,7 +36,47 @@ internal sealed interface RnsCoreEvent {
         val connected: Boolean,
         val rttMs: Long = 0L,
     ) : RnsCoreEvent
+
+    data class PttFrameReceived(
+        val channelId: String,
+        val sessionId: String,
+        val senderHashHex: String,
+        val seq: Long,
+        val timestampMs: Long,
+        val codec: String,
+        val durationMs: Int,
+        val audioBytes: ByteArray,
+        val hopCount: Int = 1,
+    ) : RnsCoreEvent
+
+    data class PttFloorEvent(
+        val channelId: String,
+        val sessionId: String,
+        val actorHashHex: String,
+        val action: String,
+        val priority: Int,
+        val timestampMs: Long,
+        val holderHashHex: String? = null,
+        val detail: String = "",
+    ) : RnsCoreEvent
 }
+
+internal data class RnsCoreRouteSnapshot(
+    val destinationHashHex: String,
+    val hops: Int,
+    val nextHopHex: String?,
+    val learnedAtMs: Long,
+    val lastActivityAtMs: Long,
+    val expiresAtMs: Long,
+    val interfaceTag: String,
+)
+
+internal data class RnsCoreMultiHopTelemetry(
+    val enableTransportRelay: Boolean = false,
+    val activeLinksCount: Int = 0,
+    val lastLinkRttMs: Long? = null,
+    val routes: List<RnsCoreRouteSnapshot> = emptyList(),
+)
 
 internal data class RnsCoreStatus(
     val running: Boolean = false,
@@ -94,5 +134,31 @@ internal interface RnsCoreEngine {
     fun revokedPeers(): List<String> = emptyList()
     fun bindActorDevice(actorId: String, deviceTokenHash: String): RnsActorDeviceBinding? = null
     fun ed25519PublicKeyHex(): String = ""
+    fun multiHopTelemetry(): RnsCoreMultiHopTelemetry = RnsCoreMultiHopTelemetry()
+    fun pttDestinationHashHex(): String = ""
+    fun announcePtt() {}
+    fun sendPttFrame(
+        destinationHashHex: String,
+        channelId: String,
+        sessionId: String,
+        seq: Long,
+        codec: String,
+        durationMs: Int,
+        audioBytes: ByteArray,
+    ): Boolean = false
+
+    fun requestPttFloor(
+        destinationHashHex: String,
+        channelId: String,
+        sessionId: String,
+        priority: Int,
+    ): RnsCoreEvent.PttFloorEvent? = null
+
+    fun releasePttFloor(
+        destinationHashHex: String,
+        channelId: String,
+        sessionId: String,
+    ): RnsCoreEvent.PttFloorEvent? = null
+
     fun status(): RnsCoreStatus
 }

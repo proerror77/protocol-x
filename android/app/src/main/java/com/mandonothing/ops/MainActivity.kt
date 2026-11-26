@@ -72,6 +72,7 @@ import com.mandonothing.ops.comm.VideoChannelState
 import com.mandonothing.ops.comm.VideoChannelTransport
 import com.mandonothing.ops.comm.rns.Rns409Resolution
 import com.mandonothing.ops.comm.rns.RnsOfflineSyncReconciler
+import com.mandonothing.ops.comm.rns.RnsRuntimeService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -317,6 +318,12 @@ class MainActivity : Activity() {
             val source = (binder as VoiceSessionService.LocalBinder).session
             voiceService = source
             source.attachUi(voiceOwner)
+            source.attachRnsCoordination(
+                networkManager = commGateway.rnsNetworkManager(),
+                pttBridge = RnsRuntimeService.pttBridge,
+                inboundFrames = RnsRuntimeService.pttFrames,
+                inboundFloor = RnsRuntimeService.pttFloorEvents,
+            )
             val workspace = source.state.value.workspace
             if (client == null && workspace != null) {
                 loginJob?.cancel()

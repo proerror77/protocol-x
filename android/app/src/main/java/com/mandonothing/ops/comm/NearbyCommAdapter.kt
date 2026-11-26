@@ -16,6 +16,10 @@ import com.mandonothing.ops.NearbyPrivateIdentity
 import com.mandonothing.ops.NearbyRadio
 import com.mandonothing.ops.NearbyService
 import com.mandonothing.ops.NearbySettings
+import com.mandonothing.ops.comm.aware.RnsRadioKind
+import com.mandonothing.ops.comm.network.RnsNetworkInputs
+import com.mandonothing.ops.comm.network.RnsNetworkManager
+import com.mandonothing.ops.comm.network.RnsTopologyDiagnostics
 import com.mandonothing.ops.comm.rns.RnsCredentialLeaseSync
 import com.mandonothing.ops.comm.rns.RnsLocalStore
 import com.mandonothing.ops.comm.rns.RnsLxmfTransportAdapter
@@ -252,6 +256,9 @@ internal class DefaultCommGateway(
 ) : CommGateway {
     private val settings by lazy { NearbySettings(requireNotNull(context)) }
     private val rnsStore by lazy { context?.let(::RnsLocalStore) }
+    private val topologyDiagnostics: RnsTopologyDiagnostics =
+        if (observeNearby) RnsRuntimeService.topologyDiagnostics else RnsTopologyDiagnostics()
+    private val networkManager: RnsNetworkManager = RnsNetworkManager()
     private val adapters = linkedMapOf<CommTransportKind, CommTransportAdapter>()
     private val mutableNetworkState = MutableStateFlow(CommNetworkState())
     private val mutableMessages = MutableStateFlow<List<CommMessageEnvelope>>(emptyList())
@@ -302,6 +309,7 @@ internal class DefaultCommGateway(
 
     override fun registerAdapter(adapter: CommTransportAdapter) {
         adapters[adapter.kind] = adapter
+        publishNetworkAndMessages()
     }
 
     private fun observeNearbyService() {
@@ -309,6 +317,9 @@ internal class DefaultCommGateway(
             launch { NearbyService.radios.collect { publishNetworkAndMessages() } }
             launch { NearbyService.channelCredential.collect { publishNetworkAndMessages() } }
             launch { NearbyService.diagnostics.collect { publishNetworkAndMessages() } }
+            launch { RnsRuntimeService.awareNetworkState.collect { publishNetworkAndMessages() } }
+            launch { RnsRuntimeService.awareDiagnostics.collect { publishNetworkAndMessages() } }
+            launch { topologyDiagnostics.snapshot.collect { publishNetworkAndMessages() } }
             rnsAdapter?.let { rns ->
                 launch { rns.linkStatus.collect { publishNetworkAndMessages() } }
                 launch { rns.messages.collect { publishNetworkAndMessages() } }
@@ -415,11 +426,14 @@ internal class DefaultCommGateway(
                 .associate { it.kind to it.linkStatus.value }
             if (extraLinks.isEmpty()) state else state.copy(links = state.links + extraLinks)
         }
-        val ordered = CommRouterPolicy.candidateTransports(
+        evaluateNetworkManager(currentState)
+        val policyKinds = CommRouterPolicy.candidateTransports(
             state = currentState,
             outbound = outbound,
             availableAdapters = adapters.keys,
         )
+        val managedKinds = networkManager.orderedTransportKinds(outbound)
+        val ordered = (policyKinds + managedKinds).distinct()
         var lastRejection: CommSendResult.Rejected? = null
         for (kind in ordered) {
             val adapter = adapters[kind] ?: continue
@@ -431,6 +445,17 @@ internal class DefaultCommGateway(
             }
             if (result is CommSendResult.Rejected && result.retryable) {
                 lastRejection = result
+                val managed = when (kind) {
+                    CommTransportKind.INTERNET_HTTP, CommTransportKind.LIVEKIT_MEDIA ->
+                        com.mandonothing.ops.comm.network.RnsManagedRoute.WAN_HTTP
+                    CommTransportKind.WIFI_AWARE ->
+                        com.mandonothing.ops.comm.network.RnsManagedRoute.RNS_WIFI_AWARE
+                    CommTransportKind.BLE_L2CAP ->
+                        com.mandonothing.ops.comm.network.RnsManagedRoute.RNS_BLE_L2CAP
+                    CommTransportKind.RNS_MESH ->
+                        com.mandonothing.ops.comm.network.RnsManagedRoute.LAN_RNS
+                }
+                networkManager.reportRouteFailure(managed)
                 continue
             }
             return result
@@ -538,6 +563,10 @@ internal class DefaultCommGateway(
 
     override fun gatewayReceipts(): SharedFlow<JSONObject>? = rnsAdapter?.gatewayReceipts
 
+    override fun rnsNetworkManager(): RnsNetworkManager = networkManager
+
+    override fun rnsTopologyDiagnostics(): RnsTopologyDiagnostics = topologyDiagnostics
+
     override suspend fun localIdentityKeys(accountKey: String): Pair<String, String?> = withContext(Dispatchers.IO) {
         val signing = NearbyIdentity(accountKey).publicKey
         val agreement = context?.let { runCatching { NearbyPrivateIdentity(it, accountKey).publicKey }.getOrNull() }
@@ -556,10 +585,17 @@ internal class DefaultCommGateway(
         val ble = state.links[CommTransportKind.BLE_L2CAP]
         val live = NearbyService.liveVoice
         val delivered = if (state.lastDeliveryMs == 0L) "尚无送达回执" else timeFormatter(state.lastDeliveryMs)
+        val topo = topologyDiagnostics.snapshot.value
+        val netMgrState = networkManager.state.value
         return buildString {
             appendLine("可达组员  ${state.reachablePeerCount}")
+            netMgrState.selectedRoute?.let { appendLine("当前路由  ${it.transportKind.displayName}") }
             appendLine("Wi-Fi Aware  ${wifi?.statusLabel ?: "未启用"} · ${wifi?.peerCount ?: 0} 人")
             appendLine("蓝牙  ${ble?.statusLabel ?: "未启用"} · ${ble?.peerCount ?: 0} 人")
+            if (topo.reachableDestinations > 0 || topo.reconvergenceCount > 0L) {
+                val rttPart = topo.bestLinkRttMs?.let { " · RTT ${it}ms" }.orEmpty()
+                appendLine("RNS 多跳  ${topo.reachableDestinations} 节点 · 最大 ${topo.maxHopCount} 跳$rttPart")
+            }
             append("最近送达  $delivered")
             state.lastDeliveryKind?.let { append(" · ${it.displayName}") }
             if (state.liveVoicePeerCount > 0 || live?.transmitting == true) {
@@ -596,15 +632,51 @@ internal class DefaultCommGateway(
             validatedInternet = validatedInternet,
             serverReachable = serverReachable,
         )
-        val rnsLink = rnsAdapter?.linkStatus?.value
-        val combinedLinks = if (rnsLink != null && rnsLink.reachability != CommReachability.UNAVAILABLE) {
-            nextNetwork.links + (CommTransportKind.RNS_MESH to rnsLink)
-        } else {
-            nextNetwork.links
+        val rnsLink = adapters[CommTransportKind.RNS_MESH]?.linkStatus?.value ?: rnsAdapter?.linkStatus?.value
+        val awareLinks = RnsRuntimeService.awareNetworkState.value.links
+        val mergedBaseLinks = nextNetwork.links.toMutableMap()
+        adapters.values.forEach { adapter ->
+            if (adapter !is NearbyTransportAdapter && adapter.kind != CommTransportKind.RNS_MESH) {
+                val customStatus = adapter.linkStatus.value
+                val current = mergedBaseLinks[adapter.kind]
+                if (current == null || customStatus.reachability == CommReachability.CONNECTED &&
+                    (current.reachability != CommReachability.CONNECTED || customStatus.peerCount > current.peerCount)
+                ) {
+                    mergedBaseLinks[adapter.kind] = customStatus
+                }
+            }
         }
-        val mergedNetwork = if (combinedLinks == nextNetwork.links) nextNetwork else nextNetwork.copy(
-            links = combinedLinks,
-            bestRoute = CommRouterPolicy.selectBestRoute(combinedLinks, serverReachable),
+        awareLinks[CommTransportKind.WIFI_AWARE]?.let { awareWifi ->
+            val currentWifi = mergedBaseLinks[CommTransportKind.WIFI_AWARE]
+            if (currentWifi == null || awareWifi.peerCount > currentWifi.peerCount ||
+                currentWifi.reachability == CommReachability.UNAVAILABLE
+            ) {
+                mergedBaseLinks[CommTransportKind.WIFI_AWARE] = awareWifi
+            }
+        }
+        awareLinks[CommTransportKind.BLE_L2CAP]?.let { awareBle ->
+            val currentBle = mergedBaseLinks[CommTransportKind.BLE_L2CAP]
+            if (currentBle == null || awareBle.peerCount > currentBle.peerCount ||
+                currentBle.reachability == CommReachability.UNAVAILABLE
+            ) {
+                mergedBaseLinks[CommTransportKind.BLE_L2CAP] = awareBle
+            }
+        }
+        if (rnsLink != null && rnsLink.reachability != CommReachability.UNAVAILABLE) {
+            mergedBaseLinks[CommTransportKind.RNS_MESH] = topologyDiagnostics.toRnsMeshLinkStatus(rnsLink)
+        }
+        val baseWithRadios = nextNetwork.copy(
+            links = mergedBaseLinks,
+            bestRoute = CommRouterPolicy.selectBestRoute(mergedBaseLinks, serverReachable),
+        )
+        val topoApplied = topologyDiagnostics.applyToNetworkState(baseWithRadios)
+        evaluateNetworkManager(topoApplied)
+        val mergedNetwork = topoApplied.copy(
+            bestRoute = networkManager.state.value.selectedRoute?.transportKind ?: topoApplied.bestRoute,
+            reachablePeerCount = maxOf(
+                topoApplied.reachablePeerCount,
+                networkManager.state.value.networkState.reachablePeerCount,
+            ),
         )
         mergedNetwork.links[CommTransportKind.WIFI_AWARE]?.let { wifiLinkStatus.value = it }
         mergedNetwork.links[CommTransportKind.BLE_L2CAP]?.let { bleLinkStatus.value = it }
@@ -649,6 +721,28 @@ internal class DefaultCommGateway(
             mutableEvents.tryEmit(CommEventEnvelope.MessageReceived(it))
         }
         lastEmittedIds = newIds
+    }
+
+    private fun evaluateNetworkManager(state: CommNetworkState) {
+        val awareDiag = RnsRuntimeService.awareDiagnostics.value
+        val rnsStatus = state.links[CommTransportKind.RNS_MESH]
+        val topo = topologyDiagnostics.snapshot.value
+        networkManager.evaluate(
+            RnsNetworkInputs(
+                hasInternet = state.hasInternet,
+                validatedInternet = state.validatedInternet,
+                serverReachable = state.serverReachable,
+                lanRnsAvailable = rnsStatus?.reachability == CommReachability.CONNECTED,
+                lanRnsRttMs = topo.bestLinkRttMs,
+                lanRnsPeerCount = maxOf(rnsStatus?.peerCount ?: 0, topo.reachableDestinations),
+                wifiAwareStatus = state.links[CommTransportKind.WIFI_AWARE],
+                wifiAwarePathCost = awareDiag.bestPathCostByRadio[RnsRadioKind.WIFI_AWARE],
+                bleStatus = state.links[CommTransportKind.BLE_L2CAP],
+                blePathCost = awareDiag.bestPathCostByRadio[RnsRadioKind.BLE_L2CAP],
+                rnsMeshStatus = rnsStatus,
+                topology = topo,
+            ),
+        )
     }
 
     private fun currentNearbySession(scope: CommScope?): NearbyMessages? {

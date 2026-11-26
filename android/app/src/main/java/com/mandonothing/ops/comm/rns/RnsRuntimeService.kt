@@ -12,6 +12,10 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import com.mandonothing.ops.MainActivity
+import com.mandonothing.ops.comm.CommNetworkState
+import com.mandonothing.ops.comm.aware.RnsAwareDiagnosticsSnapshot
+import com.mandonothing.ops.comm.network.RnsTopologyDiagnostics
+import com.mandonothing.ops.comm.ptt.RnsPttTransportBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,6 +43,7 @@ class RnsRuntimeService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var store: RnsLocalStore
     private lateinit var coordinator: RnsRuntimeCoordinator
+    private lateinit var integrationController: RnsAwareIntegrationController
     private var maintenanceJob: Job? = null
     private var stateForwardJob: Job? = null
     private var foreground = false
@@ -46,17 +51,28 @@ class RnsRuntimeService : Service() {
     override fun onCreate() {
         super.onCreate()
         store = RnsLocalStore(applicationContext)
+        val engine = engineFactory?.invoke(applicationContext) ?: UniFFIRnsCoreEngine()
         coordinator = RnsRuntimeCoordinator(
             store = store,
-            engine = engineFactory?.invoke(applicationContext) ?: UniFFIRnsCoreEngine(),
+            engine = engine,
+        )
+        integrationController = RnsAwareIntegrationController(
+            coordinator = coordinator,
+            engine = engine,
+            topologyDiagnostics = topologyDiagnostics,
+            scope = serviceScope,
         )
         activeCoordinator = coordinator
+        activeIntegration = integrationController
+        pttBridge = RnsCorePttBridge(coordinator, engine)
         stateForwardJob = serviceScope.launch {
             launch { coordinator.snapshot.collect { sharedSnapshot.value = it } }
             launch { coordinator.inboundMessages.collect { sharedInbound.value = it } }
             launch { coordinator.peers.collect { sharedPeers.value = it } }
             launch { coordinator.ifacPolicy.collect { sharedIfacPolicy.value = it } }
             launch { coordinator.gatewayReceipts.collect { sharedGatewayReceipts.tryEmit(it) } }
+            launch { coordinator.pttFrames.collect { sharedPttFrames.tryEmit(it) } }
+            launch { coordinator.pttFloorEvents.collect { sharedPttFloorEvents.tryEmit(it) } }
             coordinator.deliveryReceipts.collect { sharedReceipts.tryEmit(it) }
         }
     }
@@ -77,7 +93,19 @@ class RnsRuntimeService : Service() {
 
         val config = intent?.let(::readConfigFromIntent)
         val started = serviceScope.launch(Dispatchers.IO) {
-            if (config != null) coordinator.start(config) else coordinator.restoreIfConfigured()
+            val ok = if (config != null) coordinator.start(config) else coordinator.restoreIfConfigured()
+            val activeCfg = config ?: coordinator.currentConfig()
+            if (ok && activeCfg != null) {
+                runCatching {
+                    integrationController.startAndroidRadios(applicationContext, activeCfg, serviceScope)
+                }
+                integrationController.awareCoordinator?.let { aware ->
+                    serviceScope.launch {
+                        launch { aware.networkState.collect { sharedAwareNetworkState.value = it } }
+                        aware.diagnostics.collect { sharedAwareDiagnostics.value = it }
+                    }
+                }
+            }
         }
         startMaintenanceLoop(started)
         return START_STICKY
@@ -90,6 +118,7 @@ class RnsRuntimeService : Service() {
             while (true) {
                 delay(MAINTENANCE_INTERVAL_MS)
                 runCatching { coordinator.retryPendingOutbox() }
+                runCatching { integrationController.pollMultiHopTelemetry() }
             }
         }
     }
@@ -145,8 +174,11 @@ class RnsRuntimeService : Service() {
 
     override fun onDestroy() {
         stopRuntime(clearPersistedConfig = false)
+        runCatching { integrationController.close() }
         stateForwardJob?.cancel()
         activeCoordinator = null
+        activeIntegration = null
+        pttBridge = null
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -214,12 +246,26 @@ class RnsRuntimeService : Service() {
         internal var activeCoordinator: RnsRuntimeCoordinator? = null
             private set
 
+        @Volatile
+        internal var activeIntegration: RnsAwareIntegrationController? = null
+            private set
+
+        @Volatile
+        internal var pttBridge: RnsPttTransportBridge? = null
+            private set
+
+        internal val topologyDiagnostics = RnsTopologyDiagnostics()
+
         private val sharedSnapshot = MutableStateFlow(RnsRuntimeSnapshot())
         private val sharedInbound = MutableStateFlow<List<LxmfInboundRecord>>(emptyList())
         private val sharedPeers = MutableStateFlow<List<RnsPeerRecord>>(emptyList())
         private val sharedReceipts = MutableSharedFlow<LxmfDeliveryReceipt>(extraBufferCapacity = 64)
         private val sharedIfacPolicy = MutableStateFlow<RnsIfacPolicy?>(null)
         private val sharedGatewayReceipts = MutableSharedFlow<org.json.JSONObject>(extraBufferCapacity = 32)
+        private val sharedAwareNetworkState = MutableStateFlow(CommNetworkState())
+        private val sharedAwareDiagnostics = MutableStateFlow(RnsAwareDiagnosticsSnapshot())
+        private val sharedPttFrames = MutableSharedFlow<RnsCoreEvent.PttFrameReceived>(extraBufferCapacity = 128)
+        private val sharedPttFloorEvents = MutableSharedFlow<RnsCoreEvent.PttFloorEvent>(extraBufferCapacity = 32)
 
         internal val snapshot: StateFlow<RnsRuntimeSnapshot> = sharedSnapshot.asStateFlow()
         internal val inboundMessages: StateFlow<List<LxmfInboundRecord>> = sharedInbound.asStateFlow()
@@ -227,6 +273,10 @@ class RnsRuntimeService : Service() {
         internal val deliveryReceipts: SharedFlow<LxmfDeliveryReceipt> = sharedReceipts.asSharedFlow()
         internal val ifacPolicy: StateFlow<RnsIfacPolicy?> = sharedIfacPolicy.asStateFlow()
         internal val gatewayReceipts: SharedFlow<org.json.JSONObject> = sharedGatewayReceipts.asSharedFlow()
+        internal val awareNetworkState: StateFlow<CommNetworkState> = sharedAwareNetworkState.asStateFlow()
+        internal val awareDiagnostics: StateFlow<RnsAwareDiagnosticsSnapshot> = sharedAwareDiagnostics.asStateFlow()
+        internal val pttFrames: SharedFlow<RnsCoreEvent.PttFrameReceived> = sharedPttFrames.asSharedFlow()
+        internal val pttFloorEvents: SharedFlow<RnsCoreEvent.PttFloorEvent> = sharedPttFloorEvents.asSharedFlow()
 
         internal fun start(context: Context, config: RnsRuntimeConfig): Boolean = runCatching {
             val intent = Intent(context, RnsRuntimeService::class.java)

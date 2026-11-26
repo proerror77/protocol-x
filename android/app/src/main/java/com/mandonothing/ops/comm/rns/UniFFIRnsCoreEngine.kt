@@ -8,6 +8,7 @@ import uniffi.protocolx_rns.LxmfInboundMessage as UniFfiInboundMessage
 import uniffi.protocolx_rns.LxmfOutboundMessage as UniFfiOutboundMessage
 import uniffi.protocolx_rns.LxmfReceiptStatus as UniFfiReceiptStatus
 import uniffi.protocolx_rns.NodeConfig
+import uniffi.protocolx_rns.PttFloorControlMessage
 import uniffi.protocolx_rns.RnsEventListener
 import uniffi.protocolx_rns.RnsInboundEvent
 import uniffi.protocolx_rns.RnsNode
@@ -187,6 +188,88 @@ internal class UniFFIRnsCoreEngine : RnsCoreEngine {
         )
     }
 
+    override fun multiHopTelemetry(): RnsCoreMultiHopTelemetry {
+        val current = node ?: return RnsCoreMultiHopTelemetry()
+        val raw = runCatching { current.multiHopTelemetry() }.getOrNull() ?: return RnsCoreMultiHopTelemetry()
+        return RnsCoreMultiHopTelemetry(
+            enableTransportRelay = raw.enableTransportRelay,
+            activeLinksCount = raw.activeLinksCount.toInt(),
+            lastLinkRttMs = raw.lastLinkRttMs?.toLong(),
+            routes = raw.routes.map { r ->
+                RnsCoreRouteSnapshot(
+                    destinationHashHex = r.destinationHashHex,
+                    hops = r.hops.toInt(),
+                    nextHopHex = r.nextHopHex,
+                    learnedAtMs = r.learnedAtMs.toLong(),
+                    lastActivityAtMs = r.lastActivityAtMs.toLong(),
+                    expiresAtMs = r.expiresAtMs.toLong(),
+                    interfaceTag = r.interfaceTag,
+                )
+            },
+        )
+    }
+
+    override fun pttDestinationHashHex(): String =
+        node?.let { runCatching { it.pttDestinationHashHex() }.getOrDefault("") }.orEmpty()
+
+    override fun announcePtt() {
+        node?.let { runCatching { it.announcePtt() } }
+    }
+
+    override fun sendPttFrame(
+        destinationHashHex: String,
+        channelId: String,
+        sessionId: String,
+        seq: Long,
+        codec: String,
+        durationMs: Int,
+        audioBytes: ByteArray,
+    ): Boolean {
+        val current = node ?: return false
+        return runCatching {
+            current.sendPttFrame(
+                destinationHashHex = destinationHashHex,
+                channelId = channelId,
+                sessionId = sessionId,
+                seq = seq.coerceAtLeast(0L).toULong(),
+                codec = codec,
+                durationMs = durationMs.coerceAtLeast(1).toUInt(),
+                audioBytes = audioBytes,
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    override fun requestPttFloor(
+        destinationHashHex: String,
+        channelId: String,
+        sessionId: String,
+        priority: Int,
+    ): RnsCoreEvent.PttFloorEvent? {
+        val current = node ?: return null
+        return runCatching {
+            mapFloorControl(
+                current.requestPttFloor(
+                    destinationHashHex = destinationHashHex,
+                    channelId = channelId,
+                    sessionId = sessionId,
+                    priority = priority.coerceIn(0, 255).toUByte(),
+                ),
+            )
+        }.getOrNull()
+    }
+
+    override fun releasePttFloor(
+        destinationHashHex: String,
+        channelId: String,
+        sessionId: String,
+    ): RnsCoreEvent.PttFloorEvent? {
+        val current = node ?: return null
+        return runCatching {
+            mapFloorControl(current.releasePttFloor(destinationHashHex, channelId, sessionId))
+        }.getOrNull()
+    }
+
     override fun status(): RnsCoreStatus {
         val current = node ?: return RnsCoreStatus(running = false)
         val raw = current.status()
@@ -217,13 +300,35 @@ internal class UniFFIRnsCoreEngine : RnsCoreEngine {
         )
         is RnsInboundEvent.LxmfMessageReceived -> mapInboundLxmf(event.message)
         is RnsInboundEvent.LxmfDeliveryStatus -> mapReceipt(event.receipt)
+        is RnsInboundEvent.PttFrameReceived -> RnsCoreEvent.PttFrameReceived(
+            channelId = event.frame.channelId,
+            sessionId = event.frame.sessionId,
+            senderHashHex = event.frame.senderHashHex,
+            seq = event.frame.seq.toLong(),
+            timestampMs = event.frame.timestampMs.toLong(),
+            codec = event.frame.codec,
+            durationMs = event.frame.durationMs.toInt(),
+            audioBytes = event.frame.audioBytes,
+            hopCount = event.frame.hopCount.toInt(),
+        )
+        is RnsInboundEvent.PttFloorEvent -> mapFloorControl(event.control)
         is RnsInboundEvent.SinglePacketReceived,
         is RnsInboundEvent.LinkPacketReceived,
         is RnsInboundEvent.ResourceReceived,
-        is RnsInboundEvent.PttFrameReceived,
-        is RnsInboundEvent.PttFloorEvent,
         -> null
     }
+
+    private fun mapFloorControl(msg: PttFloorControlMessage): RnsCoreEvent.PttFloorEvent =
+        RnsCoreEvent.PttFloorEvent(
+            channelId = msg.channelId,
+            sessionId = msg.sessionId,
+            actorHashHex = msg.actorHashHex,
+            action = msg.action.name,
+            priority = msg.priority.toInt(),
+            timestampMs = msg.timestampMs.toLong(),
+            holderHashHex = msg.holderHashHex,
+            detail = msg.detail,
+        )
 
     private fun mapInboundLxmf(msg: UniFfiInboundMessage): RnsCoreEvent.LxmfReceived {
         val firstAttachment = msg.attachments.firstOrNull()

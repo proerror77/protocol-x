@@ -1,5 +1,7 @@
 package com.mandonothing.ops.comm
 
+import com.mandonothing.ops.comm.network.RnsNetworkManager
+import com.mandonothing.ops.comm.network.RnsTopologyDiagnostics
 import com.twilio.audioswitch.AudioDevice
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -111,6 +113,8 @@ internal interface CommGateway {
     ): Boolean = false
     fun markEnvelopeSynced(envelopeId: String) {}
     fun gatewayReceipts(): SharedFlow<JSONObject>? = null
+    fun rnsNetworkManager(): RnsNetworkManager? = null
+    fun rnsTopologyDiagnostics(): RnsTopologyDiagnostics? = null
     fun setReceiveMuted(channelId: String, muted: Boolean)
     fun decodePrivatePhoto(bytes: ByteArray): android.graphics.Bitmap?
     fun formatDiagnostics(timeFormatter: (Long) -> String): String
