@@ -16,6 +16,9 @@ import com.mandonothing.ops.NearbyPrivateIdentity
 import com.mandonothing.ops.NearbyRadio
 import com.mandonothing.ops.NearbyService
 import com.mandonothing.ops.NearbySettings
+import com.mandonothing.ops.comm.rns.RnsLxmfTransportAdapter
+import com.mandonothing.ops.comm.rns.RnsRuntimeConfig
+import com.mandonothing.ops.comm.rns.RnsRuntimeService
 import com.mandonothing.ops.decodeNearbyPhoto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -260,6 +263,12 @@ internal class DefaultCommGateway(
     private var privateReader: Pair<String, NearbyPrivateIdentity>? = null
     private val privateContentCache = LinkedHashMap<String, NearbyPrivateContent>()
     private var lastEmittedIds = emptySet<String>()
+    private val rnsAdapter: RnsLxmfTransportAdapter? = if (observeNearby) {
+        RnsLxmfTransportAdapter(
+            scope = scope,
+            coordinatorProvider = { RnsRuntimeService.activeCoordinator },
+        )
+    } else null
 
     override val networkState: StateFlow<CommNetworkState> = mutableNetworkState.asStateFlow()
     override val messages: StateFlow<List<CommMessageEnvelope>> = mutableMessages.asStateFlow()
@@ -283,6 +292,7 @@ internal class DefaultCommGateway(
                 configProvider = { currentCredential(activeScope) },
             ),
         )
+        rnsAdapter?.let(::registerAdapter)
         if (observeNearby) observeNearbyService()
     }
 
@@ -295,6 +305,11 @@ internal class DefaultCommGateway(
             launch { NearbyService.radios.collect { publishNetworkAndMessages() } }
             launch { NearbyService.channelCredential.collect { publishNetworkAndMessages() } }
             launch { NearbyService.diagnostics.collect { publishNetworkAndMessages() } }
+            rnsAdapter?.let { rns ->
+                launch { rns.linkStatus.collect { publishNetworkAndMessages() } }
+                launch { rns.messages.collect { publishNetworkAndMessages() } }
+                launch { rns.events.collect { mutableEvents.tryEmit(it) } }
+            }
             NearbyService.session.collectLatest { session ->
                 if (session == null) {
                     lastEmittedIds = emptySet()
@@ -312,6 +327,7 @@ internal class DefaultCommGateway(
             lastEmittedIds = emptySet()
         }
         activeScope = scope
+        rnsAdapter?.selectScope(scope)
         publishNetworkAndMessages()
     }
 
@@ -339,11 +355,27 @@ internal class DefaultCommGateway(
         }
         if (config == null || Build.VERSION.SDK_INT < 29) {
             if (NearbyService.activeScope != null) NearbyService.stop(appContext)
+            if (current == null && RnsRuntimeService.activeCoordinator != null) {
+                RnsRuntimeService.stop(appContext)
+            }
             publishNetworkAndMessages()
             return
         }
         if (forceRestart || NearbyService.activeScope != config.scope) {
             NearbyService.start(appContext, config)
+        }
+        if (forceRestart || RnsRuntimeService.activeCoordinator == null) {
+            RnsRuntimeService.start(
+                appContext,
+                RnsRuntimeConfig(
+                    accountKey = config.account,
+                    eventId = config.event,
+                    channelId = config.channel,
+                    channelName = config.title,
+                    actorId = config.actor.orEmpty(),
+                    lxmfDisplayName = config.actor,
+                ),
+            )
         }
         publishNetworkAndMessages()
     }
@@ -476,39 +508,53 @@ internal class DefaultCommGateway(
             validatedInternet = validatedInternet,
             serverReachable = serverReachable,
         )
-        nextNetwork.links[CommTransportKind.WIFI_AWARE]?.let { wifiLinkStatus.value = it }
-        nextNetwork.links[CommTransportKind.BLE_L2CAP]?.let { bleLinkStatus.value = it }
-        if (nextNetwork != mutableNetworkState.value) {
-            mutableNetworkState.value = nextNetwork
-            mutableEvents.tryEmit(CommEventEnvelope.NetworkChanged(nextNetwork))
+        val rnsLink = rnsAdapter?.linkStatus?.value
+        val combinedLinks = if (rnsLink != null && rnsLink.reachability != CommReachability.UNAVAILABLE) {
+            nextNetwork.links + (CommTransportKind.RNS_MESH to rnsLink)
+        } else {
+            nextNetwork.links
+        }
+        val mergedNetwork = if (combinedLinks == nextNetwork.links) nextNetwork else nextNetwork.copy(
+            links = combinedLinks,
+            bestRoute = CommRouterPolicy.selectBestRoute(combinedLinks, serverReachable),
+        )
+        mergedNetwork.links[CommTransportKind.WIFI_AWARE]?.let { wifiLinkStatus.value = it }
+        mergedNetwork.links[CommTransportKind.BLE_L2CAP]?.let { bleLinkStatus.value = it }
+        if (mergedNetwork != mutableNetworkState.value) {
+            mutableNetworkState.value = mergedNetwork
+            mutableEvents.tryEmit(CommEventEnvelope.NetworkChanged(mergedNetwork))
         }
 
         val session = currentNearbySession(currentScope)
-        if (currentScope == null || session == null) {
+        val rnsEnvelopes = rnsAdapter?.messages?.value.orEmpty()
+        if (currentScope == null || (session == null && rnsEnvelopes.isEmpty())) {
             if (mutableMessages.value.isNotEmpty()) mutableMessages.value = emptyList()
             return
         }
-        val entries = session.messages.value
-        val envelopes = entries.asSequence()
-            .filterNot { it.isControl }
-            .filter { !it.isPrivate || it.sender == session.sender || session.isPrivateAddressedToMe(it) }
-            .toList()
-            .takeLast(24)
-            .mapNotNull { message ->
-                val privateBody = if (message.isPrivate) {
-                    readPrivateMessage(currentScope, message) ?: return@mapNotNull null
-                } else {
-                    null
+        val nearbyEnvelopes = if (session != null) {
+            val entries = session.messages.value
+            entries.asSequence()
+                .filterNot { it.isControl }
+                .filter { !it.isPrivate || it.sender == session.sender || session.isPrivateAddressedToMe(it) }
+                .toList()
+                .takeLast(24)
+                .mapNotNull { message ->
+                    val privateBody = if (message.isPrivate) {
+                        readPrivateMessage(currentScope, message) ?: return@mapNotNull null
+                    } else {
+                        null
+                    }
+                    NearbyCommMapper.toEnvelope(
+                        message = message,
+                        scope = currentScope,
+                        localSender = session.sender,
+                        localActor = session.actor,
+                        receipts = session.readReceipts(message.id),
+                        privateContent = privateBody,
+                    )
                 }
-                NearbyCommMapper.toEnvelope(
-                    message = message,
-                    scope = currentScope,
-                    localSender = session.sender,
-                    localActor = session.actor,
-                    receipts = session.readReceipts(message.id),
-                    privateContent = privateBody,
-                )
-            }
+        } else emptyList()
+        val envelopes = (nearbyEnvelopes + rnsEnvelopes).distinctBy { it.id }.sortedBy { it.createdAtMs }
         mutableMessages.value = envelopes
         val newIds = envelopes.mapTo(mutableSetOf()) { it.id }
         envelopes.filter { it.id !in lastEmittedIds && !it.isMine }.forEach {
