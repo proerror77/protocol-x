@@ -1,5 +1,101 @@
 use serde::{Deserialize, Serialize};
 
+/// Private Interface Access Code (IFAC) network isolation credentials (RNS-05).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct IfacConfig {
+    #[uniffi(default = None)]
+    pub network_name: Option<String>,
+    #[uniffi(default = None)]
+    pub passphrase: Option<String>,
+    /// IFAC mask tag length in bytes (1..=64; 16 matches official Python RNS default).
+    #[uniffi(default = 16)]
+    pub ifac_size_bytes: u8,
+    /// When true, node startup fails unless non-empty IFAC credentials are supplied,
+    /// and unauthenticated/wrong-IFAC frames are rejected at the interface boundary.
+    #[uniffi(default = false)]
+    pub require_private_ifac: bool,
+}
+
+impl Default for IfacConfig {
+    fn default() -> Self {
+        Self {
+            network_name: None,
+            passphrase: None,
+            ifac_size_bytes: 16,
+            require_private_ifac: false,
+        }
+    }
+}
+
+/// Cryptographic binding between Protocol X actor/device identity and an RNS node identity (RNS-05).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct ActorDeviceBinding {
+    pub actor_id: String,
+    pub device_token_hash: String,
+    pub rns_destination_hash_hex: String,
+    pub rns_identity_hash_hex: String,
+    pub ed25519_public_key_hex: String,
+    pub binding_digest_hex: String,
+}
+
+/// Multi-hop routing table entry telemetry (RNS-06).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct RouteTelemetry {
+    pub destination_hash_hex: String,
+    pub hops: u8,
+    pub next_hop_hex: Option<String>,
+    pub learned_at_ms: u64,
+    pub last_activity_at_ms: u64,
+    pub expires_at_ms: u64,
+    pub interface_tag: String,
+}
+
+/// Multi-hop relay & link-RTT telemetry snapshot (RNS-06).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct MultiHopTelemetry {
+    pub enable_transport_relay: bool,
+    pub active_links_count: u32,
+    pub last_link_rtt_ms: Option<u64>,
+    pub routes: Vec<RouteTelemetry>,
+}
+
+/// PTT floor control actions for low-latency multi-hop floor arbitration (RNS-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
+pub enum PttFloorAction {
+    Request,
+    Grant,
+    Busy,
+    Preempt,
+    Release,
+}
+
+/// Low-latency RNS multi-hop PTT audio frame packet (RNS-10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct PttFramePacket {
+    pub channel_id: String,
+    pub session_id: String,
+    pub sender_hash_hex: String,
+    pub seq: u64,
+    pub timestamp_ms: u64,
+    pub codec: String,
+    pub duration_ms: u32,
+    pub audio_bytes: Vec<u8>,
+    pub hop_count: u8,
+}
+
+/// Low-latency RNS multi-hop PTT floor-control signal (RNS-10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct PttFloorControlMessage {
+    pub channel_id: String,
+    pub session_id: String,
+    pub actor_hash_hex: String,
+    pub action: PttFloorAction,
+    pub priority: u8,
+    pub timestamp_ms: u64,
+    pub holder_hash_hex: Option<String>,
+    pub detail: String,
+}
+
 /// Configuration for starting a Protocol X RNS + LXMF transport node.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NodeConfig {
@@ -30,6 +126,18 @@ pub struct NodeConfig {
     pub lxmf_display_name: Option<String>,
     /// Optional default LXMF propagation node destination hash hex (32 chars).
     pub propagation_node_hex: Option<String>,
+    /// Optional private-network IFAC credentials (RNS-05).
+    #[uniffi(default = None)]
+    pub ifac: Option<IfacConfig>,
+    /// Initial revoked identity/destination hashes (32-char hex) dropped at runtime/bridge boundaries (RNS-05).
+    #[uniffi(default = [])]
+    pub revoked_identity_hashes: Vec<String>,
+    /// Optional announce rate-limit target window in milliseconds for attached interfaces (RNS-06).
+    #[uniffi(default = None)]
+    pub announce_rate_limit_ms: Option<u64>,
+    /// Optional route freshness TTL in milliseconds enforced by `purge_expired_routes` (RNS-06).
+    #[uniffi(default = None)]
+    pub path_ttl_ms: Option<u64>,
 }
 
 impl Default for NodeConfig {
@@ -48,6 +156,10 @@ impl Default for NodeConfig {
             storage_dir: None,
             lxmf_display_name: None,
             propagation_node_hex: None,
+            ifac: None,
+            revoked_identity_hashes: Vec::new(),
+            announce_rate_limit_ms: None,
+            path_ttl_ms: None,
         }
     }
 }
@@ -178,6 +290,12 @@ pub enum RnsInboundEvent {
     },
     LxmfDeliveryStatus {
         receipt: LxmfDeliveryReceipt,
+    },
+    PttFrameReceived {
+        frame: PttFramePacket,
+    },
+    PttFloorEvent {
+        control: PttFloorControlMessage,
     },
 }
 

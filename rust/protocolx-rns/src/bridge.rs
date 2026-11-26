@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use prns_core::interfaces::{
-    AnnounceBandwidthCap, BitrateBps, ConfiguredInterfacePolicy, EgressCapability,
-    IngressCapability, InterfaceCapabilities, InterfaceDefaults, InterfaceDescriptor,
-    InterfaceGravity, InterfaceId, InterfaceKind, InterfaceMode, MtuPolicy, ReportsStatus,
-    StatusView, TransportCapability,
+    AnnounceBandwidthCap, AnnounceRateLimit, BitrateBps, ConfiguredInterfacePolicy,
+    EgressCapability, IngressCapability, InterfaceCapabilities, InterfaceCommonPolicy,
+    InterfaceDefaults, InterfaceDescriptor, InterfaceGravity, InterfaceId, InterfaceKind,
+    InterfaceMode, MtuPolicy, ReportsStatus, StatusView, TransportCapability,
 };
 use prns_runtime::manifold::interface_seam::{Interface, InterfaceSeam};
 use prns_runtime_tokio::manifold::driver::TokioInterfaceStatus;
@@ -14,11 +14,13 @@ use tokio::sync::mpsc;
 
 use crate::types::{CustomInterfaceKind, CustomLinkMetrics, RnsCustomInterfaceBridge};
 
-/// Idempotent guard ensuring `on_interface_detached` fires exactly once even if teardown cancels `run`.
+/// Idempotent guard ensuring `on_interface_detached` fires exactly once on real teardown,
+/// while allowing internal IFAC credential rotation to suppress detached callbacks.
 pub(crate) struct BridgeDetachHandle {
     interface_tag: String,
     bridge: Arc<dyn RnsCustomInterfaceBridge>,
     notified: AtomicBool,
+    suppressed: AtomicBool,
 }
 
 impl BridgeDetachHandle {
@@ -27,15 +29,33 @@ impl BridgeDetachHandle {
             interface_tag,
             bridge,
             notified: AtomicBool::new(false),
+            suppressed: AtomicBool::new(false),
         }
     }
 
+    pub(crate) fn suppress(&self) {
+        self.suppressed.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) fn notify_detached_once(&self) {
+        if self.suppressed.load(Ordering::SeqCst) {
+            return;
+        }
         if !self.notified.swap(true, Ordering::SeqCst) {
             self.bridge
                 .on_interface_detached(self.interface_tag.clone());
         }
     }
+}
+
+/// Stored metadata needed to re-attach a custom bridge during dynamic IFAC rotation.
+#[derive(Clone)]
+pub(crate) struct CustomBridgeSpec {
+    pub(crate) kind: CustomInterfaceKind,
+    pub(crate) hw_mtu: usize,
+    pub(crate) bitrate: BitrateBps,
+    pub(crate) announce_rate_limit_ms: Option<u64>,
+    pub(crate) bridge: Arc<dyn RnsCustomInterfaceBridge>,
 }
 
 /// Runtime registry for custom pluggable interfaces and their Kotlin-reported link metrics.
@@ -55,6 +75,16 @@ impl BridgeRegistry {
             detach_handles: Mutex::new(HashMap::new()),
         }
     }
+
+    pub(crate) fn tag_for_interface_id(&self, id: InterfaceId) -> Option<String> {
+        self.interface_ids
+            .lock()
+            .ok()
+            .and_then(|map| {
+                map.iter()
+                    .find_map(|(tag, &iid)| if iid == id { Some(tag.clone()) } else { None })
+            })
+    }
 }
 
 /// Pluggable Reticulum `Interface` bridging frames between `personal-rns` and Kotlin transports.
@@ -64,6 +94,7 @@ pub(crate) struct CustomBridgeInterface {
     kind: InterfaceKind,
     hw_mtu: usize,
     bitrate: BitrateBps,
+    announce_rate_limit_ms: Option<u64>,
     channel_tag: Vec<u8>,
     inbound_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     bridge: Arc<dyn RnsCustomInterfaceBridge>,
@@ -77,13 +108,17 @@ impl CustomBridgeInterface {
         kind: CustomInterfaceKind,
         hw_mtu: usize,
         bitrate: BitrateBps,
+        announce_rate_limit_ms: Option<u64>,
         inbound_rx: mpsc::UnboundedReceiver<Vec<u8>>,
         bridge: Arc<dyn RnsCustomInterfaceBridge>,
         detach_handle: Arc<BridgeDetachHandle>,
     ) -> Self {
         let prns_kind = match kind {
-            CustomInterfaceKind::WifiAware => InterfaceKind::WifiAwarePeer,
-            CustomInterfaceKind::BleL2cap => InterfaceKind::BluetoothPeer,
+            // Use non-fleet InterfaceKinds (supervisor_kind() == None) so manually attached
+            // CustomBridgeInterface peers each get independent SendAnnounce routing instead of
+            // collapsing into an unattached fleet supervisor.
+            CustomInterfaceKind::WifiAware => InterfaceKind::WifiAware,
+            CustomInterfaceKind::BleL2cap => InterfaceKind::Pipe,
             CustomInterfaceKind::Custom => InterfaceKind::Pipe,
         };
         let channel_tag = interface_tag.as_bytes().to_vec();
@@ -98,6 +133,7 @@ impl CustomBridgeInterface {
             kind: prns_kind,
             hw_mtu: hw_mtu.max(500),
             bitrate,
+            announce_rate_limit_ms,
             channel_tag,
             inbound_rx,
             bridge,
@@ -120,20 +156,38 @@ impl Interface for CustomBridgeInterface {
     }
 
     fn descriptor(&self) -> InterfaceDescriptor {
+        let announce_rate_limit = self.announce_rate_limit_ms.map(|ms| AnnounceRateLimit {
+            target_ms: ms.max(1),
+            grace: 2,
+            penalty_ms: ms.max(1).saturating_mul(2),
+        });
+        let mut common = InterfaceCommonPolicy::RNS_DEFAULT;
+        let announce_bandwidth_cap = if self.announce_rate_limit_ms.is_some() {
+            AnnounceBandwidthCap::RNS_DEFAULT
+        } else {
+            // High-density tactical custom bridges (Wi-Fi Aware / BLE) rely on IFAC
+            // authentication at the wire boundary rather than Reticulum's 3 Hz / 15s-hold
+            // ingress burst throttle, which otherwise stalls 10-100 node squad convergence.
+            common.ingress_control.enabled = false;
+            AnnounceBandwidthCap::Unlimited
+        };
         let mut desc = InterfaceDefaults {
             capabilities: InterfaceCapabilities {
                 ingress: IngressCapability::Enabled,
-                egress: EgressCapability::Enabled(TransportCapability::CrossInterfaceOnly),
+                egress: EgressCapability::Enabled(TransportCapability::SameInterfaceRepeat),
             },
             mode: InterfaceMode::Full,
             gravity: InterfaceGravity::ZERO,
             bitrate: self.bitrate,
             mtu: MtuPolicy::fixed(self.hw_mtu),
-            announce_rate_limit: None,
-            announce_bandwidth_cap: AnnounceBandwidthCap::RNS_DEFAULT,
+            announce_rate_limit,
+            announce_bandwidth_cap,
             airtime_duty_cycle: None,
         }
-        .configured(ConfiguredInterfacePolicy::default())
+        .configured(ConfiguredInterfacePolicy {
+            common: Some(common),
+            ..ConfiguredInterfacePolicy::default()
+        })
         .descriptor(self.id);
         let _ = self.kind;
         desc.hardware_mtu = Some(self.hw_mtu);

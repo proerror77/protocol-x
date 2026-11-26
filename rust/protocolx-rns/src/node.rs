@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use personal_rns::identity::{
-    PrivateIdentityMaterial, PublicIdentityMaterial, IDENTITY_SECRET_KEY_LEN,
+    IdentityHash, PrivateIdentityMaterial, PublicIdentityMaterial, IDENTITY_SECRET_KEY_LEN,
 };
 use personal_rns::prelude::{
     request_endpoints, try_generate_identity_secret, AnnounceAppData, AnnounceNow,
@@ -19,32 +19,57 @@ use personal_rns::routing::announce::{derive_destination_hash, expand_name};
 use personal_rns::routing::delivery::Delivery;
 use personal_rns::routing::links::LinkId;
 use personal_rns::udp::UdpInterface;
+use prns_core::interfaces::IfacContext;
+use prns_core::routing::routes::NextHop;
+use prns_core::routing::{BlackholeExpiry, BlackholedIdentity};
+use prns_runtime::node_introspection::NodeIntrospection;
 use prns_runtime_tokio::runtime::node_introspection::DestinationIdentityQuery;
-use prns_runtime_tokio::runtime::AttachedInterface;
+use prns_runtime_tokio::runtime::{
+    AttachedInterface, AttachedSupervisor, IdentityBlackholeControl, RoutingControl,
+};
 use tokio::runtime::Runtime;
 use tokio::sync::{oneshot, Notify};
 
-use crate::bridge::{BridgeRegistry, CustomBridgeInterface};
+use crate::bridge::{
+    BridgeDetachHandle, BridgeRegistry, CustomBridgeInterface, CustomBridgeSpec,
+};
 use crate::error::ProtocolxRnsError;
 use crate::identity::{compute_destination_hash_for_secret, RnsIdentity};
+use crate::ifac::{build_ifac_context, RevocationList};
 use crate::lxmf::{
     pack_lxmf_announce_app_data, pack_propagated_bundle, pack_propagated_get_request, pack_signed,
     unpack_and_verify, unpack_opportunistic, unpack_propagated_id_list, unpack_propagated_messages,
     LXMF_ENCRYPTED_PACKET_MAX_CONTENT, LXMF_LINK_PACKET_MAX_CONTENT, LXMF_OVERHEAD,
 };
+use crate::ptt::{
+    encode_ptt_floor_wire, encode_ptt_frame_wire, try_decode_ptt_wire, DecodedPttWire,
+    PttFloorArbiter,
+};
 use crate::store::LxmfLocalStore;
 use crate::types::{
-    CustomInterfaceKind, CustomLinkMetrics, LxmfDeliveryMode, LxmfDeliveryReceipt,
-    LxmfInboundMessage, LxmfOutboundMessage, LxmfReceiptStatus, NodeConfig, NodeStatus,
-    RnsCustomInterfaceBridge, RnsEventListener, RnsInboundEvent,
+    CustomInterfaceKind, CustomLinkMetrics, IfacConfig, LxmfDeliveryMode, LxmfDeliveryReceipt,
+    LxmfInboundMessage, LxmfOutboundMessage, LxmfReceiptStatus, MultiHopTelemetry, NodeConfig,
+    NodeStatus, PttFloorAction, PttFloorControlMessage, PttFramePacket, RnsCustomInterfaceBridge,
+    RnsEventListener, RnsInboundEvent, RouteTelemetry,
 };
+
+struct StartupReady {
+    bound_tcp_addr: Option<String>,
+    handle: PrnsNodeHandle,
+    supervisors: Vec<AttachedSupervisor>,
+    wired_ifaces: Vec<AttachedInterface>,
+    current_ifac: Option<(IfacContext, Option<String>)>,
+}
 
 struct RuntimeState {
     handle: PrnsNodeHandle,
     shutdown_tx: Option<oneshot::Sender<()>>,
     thread_handle: Option<JoinHandle<()>>,
     bound_tcp_addr: Option<String>,
-    custom_ifaces: HashMap<String, AttachedInterface>,
+    supervisors: Vec<AttachedSupervisor>,
+    wired_ifaces: Vec<AttachedInterface>,
+    custom_ifaces: HashMap<String, (AttachedInterface, CustomBridgeSpec)>,
+    current_ifac: Option<(IfacContext, Option<String>)>,
 }
 
 struct SharedEventState {
@@ -52,7 +77,10 @@ struct SharedEventState {
     notify: Notify,
     listener: Mutex<Option<Box<dyn RnsEventListener>>>,
     known_peers: Mutex<HashSet<String>>,
+    peer_hops: Mutex<HashMap<[u8; 16], u8>>,
     active_links: Mutex<HashSet<String>>,
+    last_link_rtt_ms: Mutex<Option<u64>>,
+    route_activity_wall: Mutex<HashMap<[u8; 16], (u64, u64)>>,
     lxmf_messages: Mutex<Vec<LxmfInboundMessage>>,
     lxmf_seen_hashes: Mutex<HashSet<String>>,
     lxmf_receipts: Mutex<Vec<LxmfDeliveryReceipt>>,
@@ -61,6 +89,8 @@ struct SharedEventState {
     announce_lookup_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<DestinationHash>>>,
     store: Option<LxmfLocalStore>,
     bridges: BridgeRegistry,
+    revocations: RevocationList,
+    ptt_arbiter: PttFloorArbiter,
 }
 
 impl SharedEventState {
@@ -79,7 +109,10 @@ impl SharedEventState {
             notify: Notify::new(),
             listener: Mutex::new(None),
             known_peers: Mutex::new(HashSet::new()),
+            peer_hops: Mutex::new(HashMap::new()),
             active_links: Mutex::new(HashSet::new()),
+            last_link_rtt_ms: Mutex::new(None),
+            route_activity_wall: Mutex::new(HashMap::new()),
             lxmf_messages: Mutex::new(messages),
             lxmf_seen_hashes: Mutex::new(seen),
             lxmf_receipts: Mutex::new(receipts),
@@ -88,6 +121,8 @@ impl SharedEventState {
             announce_lookup_tx: Mutex::new(None),
             store,
             bridges: BridgeRegistry::new(),
+            revocations: RevocationList::new(),
+            ptt_arbiter: PttFloorArbiter::new(),
         }
     }
 
@@ -98,19 +133,59 @@ impl SharedEventState {
             .and_then(|m| m.get(dest_hash).copied())
     }
 
+    fn lookup_peer_hops(&self, dest_hex: &str) -> u8 {
+        let Ok(bytes) = hex::decode(dest_hex) else {
+            return 1;
+        };
+        let Ok(arr) = <[u8; 16]>::try_from(bytes) else {
+            return 1;
+        };
+        self.peer_hops
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&arr).copied())
+            .unwrap_or(1)
+    }
+
+    fn is_hex_revoked(&self, hash_hex: &str) -> bool {
+        let Ok(bytes) = hex::decode(hash_hex.trim()) else {
+            return false;
+        };
+        if let Ok(arr) = <[u8; 16]>::try_from(bytes) {
+            return self.revocations.is_revoked(&arr);
+        }
+        false
+    }
+
     fn push_event(&self, event: RnsInboundEvent) {
         match &event {
             RnsInboundEvent::AnnounceHeard {
                 destination_hash_hex,
-                ..
+                hops,
             } => {
                 if let Ok(mut peers) = self.known_peers.lock() {
                     peers.insert(destination_hash_hex.clone());
                 }
+                if let Ok(bytes) = hex::decode(destination_hash_hex) {
+                    if let Ok(arr) = <[u8; 16]>::try_from(bytes) {
+                        if let Ok(mut hm) = self.peer_hops.lock() {
+                            hm.insert(arr, *hops);
+                        }
+                        if let Ok(mut wall) = self.route_activity_wall.lock() {
+                            wall.insert(arr, (0, now_millis()));
+                        }
+                    }
+                }
             }
-            RnsInboundEvent::LinkEstablished { link_id_hex, .. } => {
+            RnsInboundEvent::LinkEstablished {
+                link_id_hex,
+                rtt_millis,
+            } => {
                 if let Ok(mut links) = self.active_links.lock() {
                     links.insert(link_id_hex.clone());
+                }
+                if let Ok(mut rtt) = self.last_link_rtt_ms.lock() {
+                    *rtt = Some(*rtt_millis);
                 }
             }
             RnsInboundEvent::LinkClosed { link_id_hex } => {
@@ -137,6 +212,9 @@ impl SharedEventState {
     }
 
     fn record_inbound_lxmf(&self, msg: LxmfInboundMessage) -> bool {
+        if self.is_hex_revoked(&msg.source_hash_hex) {
+            return false;
+        }
         let is_new = {
             let Ok(mut seen) = self.lxmf_seen_hashes.lock() else {
                 return false;
@@ -167,20 +245,39 @@ impl SharedEventState {
     }
 }
 
-/// Lifecycle, messaging, LXMF, and custom interface bridge controller for an RNS node.
+/// Lifecycle, messaging, LXMF, multi-hop relay, PTT, and custom bridge controller for an RNS node.
 #[derive(uniffi::Object)]
 pub struct RnsNode {
     config: NodeConfig,
     secret: Zeroizing<[u8; IDENTITY_SECRET_KEY_LEN]>,
-    identity_hash: personal_rns::identity::IdentityHash,
+    identity_hash: IdentityHash,
     identity_hash_hex: String,
     destination_hash: DestinationHash,
     destination_hash_hex: String,
     lxmf_destination_hash: DestinationHash,
     lxmf_destination_hash_hex: String,
-    tokio_rt: Runtime,
+    ptt_destination_hash: DestinationHash,
+    ptt_destination_hash_hex: String,
+    tokio_rt: &'static Runtime,
     runtime: Mutex<Option<RuntimeState>>,
     events: Arc<SharedEventState>,
+}
+
+fn shared_caller_runtime() -> Result<&'static Runtime, ProtocolxRnsError> {
+    static RT: OnceLock<Result<Runtime, String>> = OnceLock::new();
+    let res = RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .map_err(|e| format!("failed to build shared tokio runtime: {e}"))
+    });
+    match res {
+        Ok(rt) => Ok(rt),
+        Err(msg) => Err(ProtocolxRnsError::InterfaceError {
+            detail: msg.clone(),
+        }),
+    }
 }
 
 #[uniffi::export]
@@ -232,17 +329,31 @@ impl RnsNode {
         let lxmf_destination_hash = derive_destination_hash(&identity_hash, &lxmf_expanded);
         let lxmf_destination_hash_hex = hex::encode(lxmf_destination_hash.as_bytes());
 
+        let ptt_expanded = expand_name("protocolx", &["ptt"]).map_err(|e| {
+            ProtocolxRnsError::InvalidDestination {
+                detail: format!("failed to expand protocolx.ptt: {e:?}"),
+            }
+        })?;
+        let ptt_destination_hash = derive_destination_hash(&identity_hash, &ptt_expanded);
+        let ptt_destination_hash_hex = hex::encode(ptt_destination_hash.as_bytes());
+
+        // Validate IFAC credentials up front so invalid/missing private-network IFAC rejects at construction/start.
+        let _ = build_ifac_context(&config.ifac)?;
+
         let store = match &config.storage_dir {
             Some(dir) if !dir.trim().is_empty() => Some(LxmfLocalStore::open(&PathBuf::from(dir))?),
             _ => None,
         };
 
-        let tokio_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| ProtocolxRnsError::InterfaceError {
-                detail: format!("failed to build tokio runtime: {e}"),
-            })?;
+        let events = Arc::new(SharedEventState::new(store));
+        for rev in &config.revoked_identity_hashes {
+            let hash = RevocationList::parse_hash16(rev)?;
+            events
+                .revocations
+                .revoke(hash, Some("initial node config revocation".to_string()));
+        }
+
+        let tokio_rt = shared_caller_runtime()?;
 
         Ok(Arc::new(Self {
             config,
@@ -253,9 +364,11 @@ impl RnsNode {
             destination_hash_hex,
             lxmf_destination_hash,
             lxmf_destination_hash_hex,
+            ptt_destination_hash,
+            ptt_destination_hash_hex,
             tokio_rt,
             runtime: Mutex::new(None),
-            events: Arc::new(SharedEventState::new(store)),
+            events,
         }))
     }
 
@@ -276,6 +389,11 @@ impl RnsNode {
         self.lxmf_destination_hash_hex.clone()
     }
 
+    /// 16-byte `protocolx.ptt` Single destination hash as lowercase hex.
+    pub fn ptt_destination_hash_hex(&self) -> String {
+        self.ptt_destination_hash_hex.clone()
+    }
+
     /// Start the Reticulum + LXMF transport engine and attach configured TCP/UDP interfaces.
     pub fn start(&self) -> Result<(), ProtocolxRnsError> {
         let mut guard = self.runtime.lock().map_err(|_| ProtocolxRnsError::TransportError {
@@ -285,12 +403,15 @@ impl RnsNode {
             return Err(ProtocolxRnsError::AlreadyRunning);
         }
 
+        let _ = build_ifac_context(&self.config.ifac)?;
         let config = self.config.clone();
         let secret = Zeroizing::new(*self.secret);
+        let identity_hash = self.identity_hash;
         let lxmf_dest_hash = self.lxmf_destination_hash;
+        let ptt_dest_hash = self.ptt_destination_hash;
         let events = Arc::clone(&self.events);
         let (ready_tx, ready_rx) =
-            mpsc::sync_channel::<Result<(Option<String>, PrnsNodeHandle), ProtocolxRnsError>>(1);
+            mpsc::sync_channel::<Result<StartupReady, ProtocolxRnsError>>(1);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let thread_handle = std::thread::Builder::new()
@@ -332,7 +453,9 @@ impl RnsNode {
                     drive_node_thread(
                         config,
                         secret,
+                        identity_hash,
                         lxmf_dest_hash,
+                        ptt_dest_hash,
                         events,
                         persistence,
                         ready_tx,
@@ -345,18 +468,21 @@ impl RnsNode {
                 detail: format!("failed to spawn node thread: {e}"),
             })?;
 
-        let (bound_tcp_addr, handle) = ready_rx
+        let ready = ready_rx
             .recv()
             .map_err(|e| ProtocolxRnsError::InterfaceError {
                 detail: format!("node thread exited before initialization: {e}"),
             })??;
 
         *guard = Some(RuntimeState {
-            handle,
+            handle: ready.handle,
             shutdown_tx: Some(shutdown_tx),
             thread_handle: Some(thread_handle),
-            bound_tcp_addr,
+            bound_tcp_addr: ready.bound_tcp_addr,
+            supervisors: ready.supervisors,
+            wired_ifaces: ready.wired_ifaces,
             custom_ifaces: HashMap::new(),
+            current_ifac: ready.current_ifac,
         });
 
         Ok(())
@@ -379,8 +505,17 @@ impl RnsNode {
             if let Ok(mut ids) = self.events.bridges.interface_ids.lock() {
                 ids.clear();
             }
-            for (_, attached) in st.custom_ifaces.drain() {
+            if let Ok(mut dhs) = self.events.bridges.detach_handles.lock() {
+                dhs.clear();
+            }
+            for (_, (attached, _)) in st.custom_ifaces.drain() {
                 attached.teardown();
+            }
+            for attached in st.wired_ifaces.drain(..) {
+                attached.teardown();
+            }
+            for sup in st.supervisors.drain(..) {
+                sup.teardown();
             }
             if let Some(tx) = st.shutdown_tx.take() {
                 let _ = tx.send(());
@@ -505,11 +640,30 @@ impl RnsNode {
             })
     }
 
+    /// Broadcast an RNS announce for this node's `protocolx.ptt` destination.
+    pub fn announce_ptt(&self) -> Result<(), ProtocolxRnsError> {
+        let handle = self.active_handle()?;
+        self.tokio_rt
+            .block_on(handle.announce_now(AnnounceNow {
+                destination: self.ptt_destination_hash,
+                target: AnnounceTarget::AllInterfaces,
+                app_data: AnnounceAppData::Registered,
+            }))
+            .map_err(|e| ProtocolxRnsError::TransportError {
+                detail: format!("announce_ptt failed: {e:?}"),
+            })
+    }
+
     pub fn send_single_packet(
         &self,
         destination_hash_hex: String,
         payload: Vec<u8>,
     ) -> Result<(), ProtocolxRnsError> {
+        if self.events.is_hex_revoked(&destination_hash_hex) {
+            return Err(ProtocolxRnsError::TransportError {
+                detail: format!("destination {destination_hash_hex} is revoked"),
+            });
+        }
         let handle = self.active_handle()?;
         let dest = parse_destination_hash(&destination_hash_hex)?;
         self.tokio_rt
@@ -576,6 +730,11 @@ impl RnsNode {
         &self,
         message: LxmfOutboundMessage,
     ) -> Result<LxmfDeliveryReceipt, ProtocolxRnsError> {
+        if self.events.is_hex_revoked(&message.destination_hash_hex) {
+            return Err(ProtocolxRnsError::TransportError {
+                detail: format!("destination {} is revoked", message.destination_hash_hex),
+            });
+        }
         let handle = self.active_handle()?;
         let dest = parse_destination_hash(&message.destination_hash_hex)?;
         let ts_secs = now_secs_f64();
@@ -768,33 +927,21 @@ impl RnsNode {
         })?;
 
         let bridge: Arc<dyn RnsCustomInterfaceBridge> = Arc::from(bridge);
-        let detach_handle = Arc::new(crate::bridge::BridgeDetachHandle::new(
-            interface_tag.clone(),
-            Arc::clone(&bridge),
-        ));
-        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::unbounded_channel();
-        let iface = CustomBridgeInterface::new(
-            interface_tag.clone(),
+        let spec = CustomBridgeSpec {
             kind,
-            hw_mtu as usize,
+            hw_mtu: hw_mtu as usize,
             bitrate,
-            inbound_rx,
+            announce_rate_limit_ms: self.config.announce_rate_limit_ms,
             bridge,
-            Arc::clone(&detach_handle),
+        };
+        let attached = attach_custom_bridge_with_ifac(
+            &state.handle,
+            &self.events.bridges,
+            &interface_tag,
+            &spec,
+            state.current_ifac.as_ref(),
         );
-        let iface_id = iface.id();
-        let attached = state.handle.add_interface(iface);
-        state.custom_ifaces.insert(interface_tag.clone(), attached);
-
-        if let Ok(mut txs) = self.events.bridges.inbound_txs.lock() {
-            txs.insert(interface_tag.clone(), inbound_tx);
-        }
-        if let Ok(mut ids) = self.events.bridges.interface_ids.lock() {
-            ids.insert(interface_tag.clone(), iface_id);
-        }
-        if let Ok(mut dhs) = self.events.bridges.detach_handles.lock() {
-            dhs.insert(interface_tag, detach_handle);
-        }
+        state.custom_ifaces.insert(interface_tag, (attached, spec));
         Ok(())
     }
 
@@ -822,10 +969,10 @@ impl RnsNode {
             .ok()
             .and_then(|mut dhs| dhs.remove(&interface_tag));
 
-        let attached = state.custom_ifaces.remove(&interface_tag);
+        let removed = state.custom_ifaces.remove(&interface_tag);
         drop(guard);
 
-        if let Some(attached) = attached {
+        if let Some((attached, _)) = removed {
             attached.teardown();
             if let Some(dh) = detach_handle {
                 dh.notify_detached_once();
@@ -879,11 +1026,7 @@ impl RnsNode {
                 detail: "metrics mutex poisoned".to_string(),
             })?;
         let entry = map.entry(interface_tag).or_default();
-        if metrics.connected {
-            entry.insert(metrics.peer_id.clone(), metrics);
-        } else {
-            entry.insert(metrics.peer_id.clone(), metrics);
-        }
+        entry.insert(metrics.peer_id.clone(), metrics);
         Ok(())
     }
 
@@ -897,9 +1040,374 @@ impl RnsNode {
             .and_then(|m| m.get(&interface_tag).map(|peers| peers.values().cloned().collect()))
             .unwrap_or_default()
     }
+
+    /// Rotate IFAC credentials dynamically across active TCP, UDP, and custom bridge interfaces (RNS-05).
+    pub fn rotate_ifac_credentials(&self, new_ifac: IfacConfig) -> Result<(), ProtocolxRnsError> {
+        let next_ifac = build_ifac_context(&Some(new_ifac))?;
+        let mut guard = self.runtime.lock().map_err(|_| ProtocolxRnsError::TransportError {
+            detail: "runtime mutex poisoned".to_string(),
+        })?;
+        let state = guard.as_mut().ok_or(ProtocolxRnsError::NotRunning)?;
+
+        // Suppress detach callbacks when swapping custom interfaces for IFAC rotation.
+        if let Ok(dhs) = self.events.bridges.detach_handles.lock() {
+            for dh in dhs.values() {
+                dh.suppress();
+            }
+        }
+        let prev_custom: Vec<(String, CustomBridgeSpec)> = state
+            .custom_ifaces
+            .drain()
+            .map(|(tag, (attached, spec))| {
+                attached.teardown();
+                (tag, spec)
+            })
+            .collect();
+        for attached in state.wired_ifaces.drain(..) {
+            attached.teardown();
+        }
+        for sup in state.supervisors.drain(..) {
+            sup.teardown();
+        }
+
+        let (supervisors, wired_ifaces) = self.tokio_rt.block_on(reattach_configured_interfaces(
+            &state.handle,
+            &self.config,
+            state.bound_tcp_addr.as_deref(),
+            next_ifac.as_ref(),
+        ))?;
+
+        state.supervisors = supervisors;
+        state.wired_ifaces = wired_ifaces;
+        state.current_ifac = next_ifac;
+
+        for (tag, spec) in prev_custom {
+            let attached = attach_custom_bridge_with_ifac(
+                &state.handle,
+                &self.events.bridges,
+                &tag,
+                &spec,
+                state.current_ifac.as_ref(),
+            );
+            state.custom_ifaces.insert(tag, (attached, spec));
+        }
+        Ok(())
+    }
+
+    /// Revoke and blackhole a peer identity or destination hash at the node and bridge boundary (RNS-05).
+    pub fn revoke_peer(
+        &self,
+        identity_or_dest_hash_hex: String,
+        reason: Option<String>,
+    ) -> Result<(), ProtocolxRnsError> {
+        let hash = RevocationList::parse_hash16(&identity_or_dest_hash_hex)?;
+        self.events.revocations.revoke(hash, reason.clone());
+        if let Ok(mut pubs) = self.events.peer_pubkeys.lock() {
+            pubs.remove(&hash);
+        }
+        if let Ok(mut peers) = self.events.known_peers.lock() {
+            peers.remove(&hex::encode(hash));
+        }
+
+        if let Ok(handle) = self.active_handle() {
+            let identity = IdentityHash::new(hash);
+            let source = self.identity_hash;
+            let dest = DestinationHash::new(hash);
+            let _ = self.tokio_rt.block_on(async move {
+                let _ = handle
+                    .blackhole_identity(BlackholedIdentity {
+                        identity,
+                        source,
+                        expiry: BlackholeExpiry::Indefinite,
+                        reason: reason.as_deref(),
+                    })
+                    .await;
+                let _ = handle.drop_route(dest).await;
+            });
+        }
+        Ok(())
+    }
+
+    /// Remove a peer identity or destination hash from the runtime revocation/blackhole list (RNS-05).
+    pub fn unrevoke_peer(
+        &self,
+        identity_or_dest_hash_hex: String,
+    ) -> Result<(), ProtocolxRnsError> {
+        let hash = RevocationList::parse_hash16(&identity_or_dest_hash_hex)?;
+        self.events.revocations.unrevoke(&hash);
+        if let Ok(handle) = self.active_handle() {
+            let identity = IdentityHash::new(hash);
+            let _ = self
+                .tokio_rt
+                .block_on(handle.unblackhole_identity(identity));
+        }
+        Ok(())
+    }
+
+    /// Return all currently revoked identity/destination hashes (lowercase 32-char hex).
+    pub fn revoked_peers(&self) -> Vec<String> {
+        self.events.revocations.all_hex()
+    }
+
+    /// Query multi-hop relay status, last link RTT, and active routing table entries (RNS-06).
+    pub fn multi_hop_telemetry(&self) -> MultiHopTelemetry {
+        let active_links_count = self
+            .events
+            .active_links
+            .lock()
+            .map(|s| s.len() as u32)
+            .unwrap_or(0);
+        let last_link_rtt_ms = self
+            .events
+            .last_link_rtt_ms
+            .lock()
+            .ok()
+            .and_then(|r| *r);
+
+        let routes = match self.active_handle() {
+            Ok(handle) => {
+                let raw_routes = self.tokio_rt.block_on(handle.routes());
+                let wall_now = now_millis();
+                if let Ok(mut track) = self.events.route_activity_wall.lock() {
+                    for r in &raw_routes {
+                        track
+                            .entry(*r.destination.as_bytes())
+                            .and_modify(|(seen_act, wall_ts)| {
+                                if r.last_route_activity_at.0 != *seen_act {
+                                    *seen_act = r.last_route_activity_at.0;
+                                    *wall_ts = wall_now;
+                                }
+                            })
+                            .or_insert((r.last_route_activity_at.0, wall_now));
+                    }
+                }
+                raw_routes
+                    .into_iter()
+                    .map(|r| self.map_route_snapshot(r))
+                    .collect()
+            }
+            Err(_) => Vec::new(),
+        };
+
+        MultiHopTelemetry {
+            enable_transport_relay: self.config.enable_transport_relay,
+            active_links_count,
+            last_link_rtt_ms,
+            routes,
+        }
+    }
+
+    /// Query routing telemetry for a specific destination hash (RNS-06).
+    pub fn route_for_destination(&self, destination_hash_hex: String) -> Option<RouteTelemetry> {
+        let dest = parse_destination_hash(&destination_hash_hex).ok()?;
+        let handle = self.active_handle().ok()?;
+        let snap = self.tokio_rt.block_on(handle.route(dest))?;
+        let wall_now = now_millis();
+        if let Ok(mut track) = self.events.route_activity_wall.lock() {
+            track
+                .entry(*snap.destination.as_bytes())
+                .and_modify(|(seen_act, wall_ts)| {
+                    if snap.last_route_activity_at.0 != *seen_act {
+                        *seen_act = snap.last_route_activity_at.0;
+                        *wall_ts = wall_now;
+                    }
+                })
+                .or_insert((snap.last_route_activity_at.0, wall_now));
+        }
+        Some(self.map_route_snapshot(snap))
+    }
+
+    /// Manually drop a cached route from the Reticulum path table (RNS-06).
+    pub fn drop_route(&self, destination_hash_hex: String) -> Result<bool, ProtocolxRnsError> {
+        let dest = parse_destination_hash(&destination_hash_hex)?;
+        let handle = self.active_handle()?;
+        let outcome = self
+            .tokio_rt
+            .block_on(handle.drop_route(dest))
+            .map_err(|e| ProtocolxRnsError::TransportError {
+                detail: format!("drop_route failed: {e:?}"),
+            })?;
+        if let Ok(mut track) = self.events.route_activity_wall.lock() {
+            track.remove(dest.as_bytes());
+        }
+        Ok(matches!(
+            outcome,
+            prns_runtime_tokio::runtime::DropRouteOutcome::Dropped
+        ))
+    }
+
+    /// Evict routes that have exceeded `NodeConfig.path_ttl_ms` without activity (RNS-06).
+    pub fn purge_expired_routes(&self) -> u32 {
+        let Some(ttl_ms) = self.config.path_ttl_ms else {
+            return 0;
+        };
+        let Ok(handle) = self.active_handle() else {
+            return 0;
+        };
+        let routes = self.tokio_rt.block_on(handle.routes());
+        let wall_now = now_millis();
+        let mut to_drop = Vec::new();
+        if let Ok(mut track) = self.events.route_activity_wall.lock() {
+            for r in &routes {
+                let entry = track
+                    .entry(*r.destination.as_bytes())
+                    .and_modify(|(seen_act, wall_ts)| {
+                        if r.last_route_activity_at.0 != *seen_act {
+                            *seen_act = r.last_route_activity_at.0;
+                            *wall_ts = wall_now;
+                        }
+                    })
+                    .or_insert((r.last_route_activity_at.0, wall_now));
+                if wall_now.saturating_sub(entry.1) >= ttl_ms {
+                    to_drop.push(r.destination);
+                }
+            }
+            for d in &to_drop {
+                track.remove(d.as_bytes());
+            }
+        }
+        let mut dropped = 0u32;
+        for d in to_drop {
+            if let Ok(prns_runtime_tokio::runtime::DropRouteOutcome::Dropped) =
+                self.tokio_rt.block_on(handle.drop_route(d))
+            {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
+    /// Transmit a compact encrypted PTT audio frame over RNS (RNS-10).
+    pub fn send_ptt_frame(
+        &self,
+        destination_hash_hex: String,
+        channel_id: String,
+        session_id: String,
+        seq: u64,
+        codec: String,
+        duration_ms: u32,
+        audio_bytes: Vec<u8>,
+    ) -> Result<(), ProtocolxRnsError> {
+        if self.events.is_hex_revoked(&destination_hash_hex) {
+            return Err(ProtocolxRnsError::TransportError {
+                detail: format!("PTT destination {destination_hash_hex} is revoked"),
+            });
+        }
+        let handle = self.active_handle()?;
+        let dest = parse_destination_hash(&destination_hash_hex)?;
+        let packet = PttFramePacket {
+            channel_id,
+            session_id,
+            sender_hash_hex: self.identity_hash_hex.clone(),
+            seq,
+            timestamp_ms: now_millis(),
+            codec,
+            duration_ms,
+            audio_bytes,
+            hop_count: 0,
+        };
+        let wire = encode_ptt_frame_wire(&packet)?;
+        self.tokio_rt
+            .block_on(handle.send_single_packet(dest, &wire))
+            .map(|_| ())
+            .map_err(|e| ProtocolxRnsError::TransportError {
+                detail: format!("send_ptt_frame failed: {e:?}"),
+            })
+    }
+
+    /// Request floor ownership for a PTT channel/session and transmit floor-control over RNS (RNS-10).
+    pub fn request_ptt_floor(
+        &self,
+        destination_hash_hex: String,
+        channel_id: String,
+        session_id: String,
+        priority: u8,
+    ) -> Result<PttFloorControlMessage, ProtocolxRnsError> {
+        self.send_ptt_floor_action(
+            &destination_hash_hex,
+            channel_id,
+            session_id,
+            PttFloorAction::Request,
+            priority,
+        )
+    }
+
+    /// Release floor ownership for a PTT channel/session and notify peer over RNS (RNS-10).
+    pub fn release_ptt_floor(
+        &self,
+        destination_hash_hex: String,
+        channel_id: String,
+        session_id: String,
+    ) -> Result<PttFloorControlMessage, ProtocolxRnsError> {
+        self.send_ptt_floor_action(
+            &destination_hash_hex,
+            channel_id,
+            session_id,
+            PttFloorAction::Release,
+            0,
+        )
+    }
 }
 
 impl RnsNode {
+    fn send_ptt_floor_action(
+        &self,
+        destination_hash_hex: &str,
+        channel_id: String,
+        session_id: String,
+        action: PttFloorAction,
+        priority: u8,
+    ) -> Result<PttFloorControlMessage, ProtocolxRnsError> {
+        if self.events.is_hex_revoked(destination_hash_hex) {
+            return Err(ProtocolxRnsError::TransportError {
+                detail: format!("PTT destination {destination_hash_hex} is revoked"),
+            });
+        }
+        let handle = self.active_handle()?;
+        let dest = parse_destination_hash(destination_hash_hex)?;
+        let decided = self.events.ptt_arbiter.apply_control(PttFloorControlMessage {
+            channel_id,
+            session_id,
+            actor_hash_hex: self.identity_hash_hex.clone(),
+            action,
+            priority,
+            timestamp_ms: now_millis(),
+            holder_hash_hex: None,
+            detail: String::new(),
+        });
+        let wire = encode_ptt_floor_wire(&decided)?;
+        self.tokio_rt
+            .block_on(handle.send_single_packet(dest, &wire))
+            .map_err(|e| ProtocolxRnsError::TransportError {
+                detail: format!("PTT floor packet failed: {e:?}"),
+            })?;
+        Ok(decided)
+    }
+
+    fn map_route_snapshot(
+        &self,
+        snap: prns_runtime_tokio::runtime::node_introspection::RouteSnapshot,
+    ) -> RouteTelemetry {
+        let next_hop_hex = match snap.via {
+            NextHop::Direct => None,
+            NextHop::Via(tid) => Some(hex::encode(tid.as_bytes())),
+        };
+        let interface_tag = self
+            .events
+            .bridges
+            .tag_for_interface_id(snap.interface)
+            .unwrap_or_else(|| hex::encode(snap.interface.as_bytes()));
+        RouteTelemetry {
+            destination_hash_hex: hex::encode(snap.destination.as_bytes()),
+            hops: snap.hops,
+            next_hop_hex,
+            learned_at_ms: snap.learned_at.0,
+            last_activity_at_ms: snap.last_route_activity_at.0,
+            expires_at_ms: snap.expires_at.0,
+            interface_tag,
+        }
+    }
+
     fn active_handle(&self) -> Result<PrnsNodeHandle, ProtocolxRnsError> {
         self.runtime
             .lock()
@@ -1049,13 +1557,16 @@ impl Drop for RnsNode {
 async fn drive_node_thread(
     config: NodeConfig,
     secret: Zeroizing<[u8; IDENTITY_SECRET_KEY_LEN]>,
+    identity_hash: IdentityHash,
     lxmf_dest_hash: DestinationHash,
+    ptt_dest_hash: DestinationHash,
     events: Arc<SharedEventState>,
     persistence: Option<NodePersistence>,
-    ready_tx: mpsc::SyncSender<Result<(Option<String>, PrnsNodeHandle), ProtocolxRnsError>>,
+    ready_tx: mpsc::SyncSender<Result<StartupReady, ProtocolxRnsError>>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
     let setup = async {
+        let initial_ifac = build_ifac_context(&config.ifac)?;
         let tcp_server = match &config.tcp_listen_addr {
             Some(addr) => {
                 let srv = TcpServer::bind(addr.as_str()).await.map_err(|e| {
@@ -1144,6 +1655,22 @@ async fn drive_node_thread(
             request_endpoints: ServeMyRequestEndpoints::No,
         };
 
+        let ptt_dest = PreConfiguredDestination::Single {
+            app_name: "protocolx",
+            aspects: &["ptt"],
+            identity: Zeroizing::new(*secret),
+            announce_app_data: &[],
+            proof: ProofStrategy::ProveAll,
+            link_requests: LinkRequestPolicy::AcceptAll,
+            ratchet: RatchetPolicy::NoRatchets,
+            resource_strategy: ResourceStrategy::Accept {
+                max_uncompressed_bytes: 1024 * 1024,
+                accept_compressed: true,
+            },
+            maximum_request_bytes: Default::default(),
+            request_endpoints: ServeMyRequestEndpoints::No,
+        };
+
         let transport_identity = if config.enable_transport_relay {
             Some(Zeroizing::new(*secret))
         } else {
@@ -1160,7 +1687,7 @@ async fn drive_node_thread(
                     let _ = handle_tx.send(node_handle);
                     PrnsNodeRecipe {
                         transport_identity,
-                        pre_configured_destinations: [primary_dest, lxmf_dest],
+                        pre_configured_destinations: [primary_dest, lxmf_dest, ptt_dest],
                         app_state: (),
                         storage: GrowableHeap,
                         request_endpoints: request_endpoints![],
@@ -1172,15 +1699,18 @@ async fn drive_node_thread(
                                 hops,
                                 ..
                             }) => {
-                                if let Ok(tx_guard) = event_sink.announce_lookup_tx.lock() {
-                                    if let Some(tx) = tx_guard.as_ref() {
-                                        let _ = tx.send(destination);
-                                    }
+                                if event_sink.revocations.is_revoked(destination.as_bytes()) {
+                                    return;
                                 }
                                 event_sink.push_event(RnsInboundEvent::AnnounceHeard {
                                     destination_hash_hex: hex::encode(destination.as_bytes()),
                                     hops,
                                 });
+                                if let Ok(tx_guard) = event_sink.announce_lookup_tx.lock() {
+                                    if let Some(tx) = tx_guard.as_ref() {
+                                        let _ = tx.send(destination);
+                                    }
+                                }
                             }
                             PrnsEvent::Diagnostic(Diagnostic::LinkEstablished(established)) => {
                                 event_sink.push_event(RnsInboundEvent::LinkEstablished {
@@ -1195,6 +1725,13 @@ async fn drive_node_thread(
                             }
                             PrnsEvent::Message(Message::Delivered(delivery)) => match delivery {
                                 Delivery::Single(single) => {
+                                    if single.destination == ptt_dest_hash
+                                        || single.plaintext.starts_with(crate::ptt::PTT_WIRE_MAGIC)
+                                    {
+                                        if handle_inbound_ptt_bytes(&event_sink, single.plaintext, None) {
+                                            return;
+                                        }
+                                    }
                                     if single.destination == lxmf_dest_hash {
                                         if let Ok(msg) = unpack_opportunistic(
                                             lxmf_dest_hash.as_bytes(),
@@ -1213,6 +1750,11 @@ async fn drive_node_thread(
                                     });
                                 }
                                 Delivery::Link(link) => {
+                                    if link.plaintext.starts_with(crate::ptt::PTT_WIRE_MAGIC)
+                                        && handle_inbound_ptt_bytes(&event_sink, link.plaintext, None)
+                                    {
+                                        return;
+                                    }
                                     if link.plaintext.len() > LXMF_OVERHEAD
                                         && &link.plaintext[..16] == lxmf_dest_hash.as_bytes()
                                     {
@@ -1286,6 +1828,8 @@ async fn drive_node_thread(
                     handle_rx,
                     tcp_server,
                     udp_iface,
+                    initial_ifac,
+                    identity_hash,
                     &config,
                     Arc::clone(&events),
                     ready_tx.clone(),
@@ -1300,6 +1844,8 @@ async fn drive_node_thread(
                     handle_rx,
                     tcp_server,
                     udp_iface,
+                    initial_ifac,
+                    identity_hash,
                     &config,
                     Arc::clone(&events),
                     ready_tx.clone(),
@@ -1317,14 +1863,17 @@ async fn drive_node_thread(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn finish_node_setup<St, R, F, S>(
     node: PrnsNode<St, R, F, S>,
     handle_rx: std::sync::mpsc::Receiver<PrnsNodeHandle>,
     tcp_server: Option<(TcpServer, String)>,
     udp_iface: Option<UdpInterface>,
+    initial_ifac: Option<(IfacContext, Option<String>)>,
+    identity_hash: IdentityHash,
     config: &NodeConfig,
     events: Arc<SharedEventState>,
-    ready_tx: mpsc::SyncSender<Result<(Option<String>, PrnsNodeHandle), ProtocolxRnsError>>,
+    ready_tx: mpsc::SyncSender<Result<StartupReady, ProtocolxRnsError>>,
     shutdown_rx: oneshot::Receiver<()>,
 ) where
     R: prns_runtime::runtime::request_endpoints::RequestEndpointSet<St>,
@@ -1332,6 +1881,19 @@ async fn finish_node_setup<St, R, F, S>(
     S: prns_runtime::storage::StorageLayout,
 {
     let handle = handle_rx.recv().unwrap_or_else(|_| node.handle());
+
+    for rev in &config.revoked_identity_hashes {
+        if let Ok(arr) = RevocationList::parse_hash16(rev) {
+            let _ = handle
+                .blackhole_identity(BlackholedIdentity {
+                    identity: IdentityHash::new(arr),
+                    source: identity_hash,
+                    expiry: BlackholeExpiry::Indefinite,
+                    reason: Some("initial config revocation"),
+                })
+                .await;
+        }
+    }
 
     let (lookup_tx, mut lookup_rx) = tokio::sync::mpsc::unbounded_channel::<DestinationHash>();
     if let Ok(mut guard) = events.announce_lookup_tx.lock() {
@@ -1345,8 +1907,23 @@ async fn finish_node_setup<St, R, F, S>(
                 .destination_identity(DestinationIdentityQuery::Destination(dest))
                 .await
             {
+                if lookup_events
+                    .revocations
+                    .is_revoked(snap.identity.as_bytes())
+                {
+                    lookup_events.revocations.revoke(
+                        *dest.as_bytes(),
+                        Some("revoked identity destination".to_string()),
+                    );
+                    continue;
+                }
                 if let Ok(mut map) = lookup_events.peer_pubkeys.lock() {
                     map.insert(*dest.as_bytes(), snap.public);
+                }
+                if let Ok(mut hm) = lookup_events.peer_hops.lock() {
+                    if let Some(&h) = hm.get(dest.as_bytes()) {
+                        hm.insert(*snap.identity.as_bytes(), h);
+                    }
                 }
             }
         }
@@ -1356,17 +1933,36 @@ async fn finish_node_setup<St, R, F, S>(
     let mut supervisors = Vec::new();
     let mut attached = Vec::new();
     if let Some((srv, bound)) = tcp_server {
-        supervisors.push(handle.supervise(srv));
+        let sup = match &initial_ifac {
+            Some((ctx, name)) => handle.supervise_with_ifac_name(srv, ctx.clone(), name.clone()),
+            None => handle.supervise(srv),
+        };
+        supervisors.push(sup);
         bound_tcp_addr = Some(bound);
     }
     for peer_addr in &config.tcp_connect_addrs {
-        attached.push(handle.attach(TcpClientInterface::new(peer_addr.clone())));
+        let client = TcpClientInterface::new(peer_addr.clone());
+        let att = match &initial_ifac {
+            Some((ctx, name)) => handle.add_interface_with_ifac_name(client, ctx.clone(), name.clone()),
+            None => handle.attach(client),
+        };
+        attached.push(att);
     }
     if let Some(udp) = udp_iface {
-        attached.push(handle.attach(udp));
+        let att = match &initial_ifac {
+            Some((ctx, name)) => handle.add_interface_with_ifac_name(udp, ctx.clone(), name.clone()),
+            None => handle.attach(udp),
+        };
+        attached.push(att);
     }
 
-    let _ = ready_tx.send(Ok((bound_tcp_addr, handle)));
+    let _ = ready_tx.send(Ok(StartupReady {
+        bound_tcp_addr,
+        handle,
+        supervisors,
+        wired_ifaces: attached,
+        current_ifac: initial_ifac,
+    }));
     let _ = node
         .run_until(async move {
             let _ = shutdown_rx.await;
@@ -1376,8 +1972,6 @@ async fn finish_node_setup<St, R, F, S>(
         *guard = None;
     }
     lookup_task.abort();
-    drop(supervisors);
-    drop(attached);
 }
 
 fn encode_announce_app_data(app_data: Option<Vec<u8>>) -> Result<AnnounceAppData, ProtocolxRnsError> {
@@ -1427,6 +2021,147 @@ fn now_secs_f64() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+fn attach_custom_bridge_with_ifac(
+    handle: &PrnsNodeHandle,
+    bridges: &BridgeRegistry,
+    interface_tag: &str,
+    spec: &CustomBridgeSpec,
+    ifac: Option<&(IfacContext, Option<String>)>,
+) -> AttachedInterface {
+    let detach_handle = Arc::new(BridgeDetachHandle::new(
+        interface_tag.to_string(),
+        Arc::clone(&spec.bridge),
+    ));
+    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::unbounded_channel();
+    let iface = CustomBridgeInterface::new(
+        interface_tag.to_string(),
+        spec.kind,
+        spec.hw_mtu,
+        spec.bitrate,
+        spec.announce_rate_limit_ms,
+        inbound_rx,
+        Arc::clone(&spec.bridge),
+        Arc::clone(&detach_handle),
+    );
+    let iface_id = iface.id();
+    let attached = match ifac {
+        Some((ctx, name)) => handle.add_interface_with_ifac_name(iface, ctx.clone(), name.clone()),
+        None => handle.add_interface(iface),
+    };
+
+    if let Ok(mut txs) = bridges.inbound_txs.lock() {
+        txs.insert(interface_tag.to_string(), inbound_tx);
+    }
+    if let Ok(mut ids) = bridges.interface_ids.lock() {
+        ids.insert(interface_tag.to_string(), iface_id);
+    }
+    if let Ok(mut dhs) = bridges.detach_handles.lock() {
+        dhs.insert(interface_tag.to_string(), detach_handle);
+    }
+    attached
+}
+
+async fn reattach_configured_interfaces(
+    handle: &PrnsNodeHandle,
+    config: &NodeConfig,
+    bound_tcp_addr: Option<&str>,
+    ifac: Option<&(IfacContext, Option<String>)>,
+) -> Result<(Vec<AttachedSupervisor>, Vec<AttachedInterface>), ProtocolxRnsError> {
+    let mut supervisors = Vec::new();
+    let mut wired = Vec::new();
+
+    if let Some(addr) = bound_tcp_addr {
+        let mut last_err = None;
+        let mut bound_srv = None;
+        for _ in 0..15 {
+            match TcpServer::bind(addr).await {
+                Ok(srv) => {
+                    bound_srv = Some(srv);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+        let srv = bound_srv.ok_or_else(|| ProtocolxRnsError::InterfaceError {
+            detail: format!("failed to re-bind TCP server on {addr}: {:?}", last_err),
+        })?;
+        let sup = match ifac {
+            Some((ctx, name)) => handle.supervise_with_ifac_name(srv, ctx.clone(), name.clone()),
+            None => handle.supervise(srv),
+        };
+        supervisors.push(sup);
+    }
+
+    for peer_addr in &config.tcp_connect_addrs {
+        let client = TcpClientInterface::new(peer_addr.clone());
+        let att = match ifac {
+            Some((ctx, name)) => {
+                handle.add_interface_with_ifac_name(client, ctx.clone(), name.clone())
+            }
+            None => handle.attach(client),
+        };
+        wired.push(att);
+    }
+
+    if let (Some(bind_addr), Some(peer_addr)) = (&config.udp_bind_addr, &config.udp_peer_addr) {
+        let bps = if config.udp_bitrate_bps == 0 {
+            1_000_000
+        } else {
+            config.udp_bitrate_bps
+        };
+        let bitrate = BitrateBps::new(bps).ok_or_else(|| ProtocolxRnsError::InterfaceError {
+            detail: "udp_bitrate_bps must be non-zero".to_string(),
+        })?;
+        let udp = UdpInterface::bind(bind_addr.as_str(), peer_addr.as_str(), bitrate)
+            .await
+            .map_err(|e| ProtocolxRnsError::InterfaceError {
+                detail: format!("UDP re-bind failed on {bind_addr} -> {peer_addr}: {e}"),
+            })?;
+        let att = match ifac {
+            Some((ctx, name)) => handle.add_interface_with_ifac_name(udp, ctx.clone(), name.clone()),
+            None => handle.attach(udp),
+        };
+        wired.push(att);
+    }
+
+    Ok((supervisors, wired))
+}
+
+fn handle_inbound_ptt_bytes(
+    event_sink: &SharedEventState,
+    raw: &[u8],
+    hop_override: Option<u8>,
+) -> bool {
+    let Some(res) = try_decode_ptt_wire(raw, hop_override.unwrap_or(1)) else {
+        return false;
+    };
+    let Ok(decoded) = res else {
+        return false;
+    };
+    match decoded {
+        DecodedPttWire::Frame(mut frame) => {
+            if event_sink.is_hex_revoked(&frame.sender_hash_hex) {
+                return true;
+            }
+            if hop_override.is_none() {
+                frame.hop_count = event_sink.lookup_peer_hops(&frame.sender_hash_hex);
+            }
+            event_sink.push_event(RnsInboundEvent::PttFrameReceived { frame });
+        }
+        DecodedPttWire::Floor(control) => {
+            if event_sink.is_hex_revoked(&control.actor_hash_hex) {
+                return true;
+            }
+            let decided = event_sink.ptt_arbiter.apply_control(control);
+            event_sink.push_event(RnsInboundEvent::PttFloorEvent { control: decided });
+        }
+    }
+    true
 }
 
 fn now_millis() -> u64 {
