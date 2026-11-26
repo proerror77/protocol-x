@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
@@ -239,10 +240,11 @@ internal class NearbyTransportAdapter(
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class DefaultCommGateway(
-    private val context: Context,
+    private val context: Context?,
     private val scope: CoroutineScope,
+    observeNearby: Boolean = context != null,
 ) : CommGateway {
-    private val settings by lazy { NearbySettings(context) }
+    private val settings by lazy { NearbySettings(requireNotNull(context)) }
     private val adapters = linkedMapOf<CommTransportKind, CommTransportAdapter>()
     private val mutableNetworkState = MutableStateFlow(CommNetworkState())
     private val mutableMessages = MutableStateFlow<List<CommMessageEnvelope>>(emptyList())
@@ -281,7 +283,7 @@ internal class DefaultCommGateway(
                 configProvider = { currentCredential(activeScope) },
             ),
         )
-        observeNearbyService()
+        if (observeNearby) observeNearbyService()
     }
 
     override fun registerAdapter(adapter: CommTransportAdapter) {
@@ -330,17 +332,18 @@ internal class DefaultCommGateway(
     }
 
     override fun refresh(forceRestart: Boolean) {
+        val appContext = context ?: return
         val current = activeScope
         val config = current?.takeIf { it.channelKind == "group" && it.nearbyScopeKey.isNotEmpty() }?.let {
             settings.read(it.accountKey, it.eventId, it.channelId, it.channelName)
         }
         if (config == null || Build.VERSION.SDK_INT < 29) {
-            if (NearbyService.activeScope != null) NearbyService.stop(context)
+            if (NearbyService.activeScope != null) NearbyService.stop(appContext)
             publishNetworkAndMessages()
             return
         }
         if (forceRestart || NearbyService.activeScope != config.scope) {
-            NearbyService.start(context, config)
+            NearbyService.start(appContext, config)
         }
         publishNetworkAndMessages()
     }
@@ -365,21 +368,33 @@ internal class DefaultCommGateway(
         currentCredential(scope)?.ownAgreementKey != null
 
     override fun send(outbound: CommOutboundMessage): CommSendResult {
+        val currentState = mutableNetworkState.value.let { state ->
+            val extraLinks = adapters.values
+                .filter { it.kind !in state.links }
+                .associate { it.kind to it.linkStatus.value }
+            if (extraLinks.isEmpty()) state else state.copy(links = state.links + extraLinks)
+        }
         val ordered = CommRouterPolicy.candidateTransports(
-            state = mutableNetworkState.value,
+            state = currentState,
             outbound = outbound,
             availableAdapters = adapters.keys,
         )
+        var lastRejection: CommSendResult.Rejected? = null
         for (kind in ordered) {
             val adapter = adapters[kind] ?: continue
             if (!adapter.supports(outbound)) continue
-            if (adapter is NearbyTransportAdapter) {
-                val result = adapter.sendSync(outbound)
-                if (result !is CommSendResult.Rejected || !result.retryable) return result
-                return result
+            val result = if (adapter is NearbyTransportAdapter) {
+                adapter.sendSync(outbound)
+            } else {
+                runBlocking { adapter.send(outbound) }
             }
+            if (result is CommSendResult.Rejected && result.retryable) {
+                lastRejection = result
+                continue
+            }
+            return result
         }
-        return CommSendResult.Rejected("离线通信暂不可用", retryable = true)
+        return lastRejection ?: CommSendResult.Rejected("离线通信暂不可用", retryable = true)
     }
 
     override suspend fun markRead(scope: CommScope, messageId: String): Boolean {
@@ -405,7 +420,7 @@ internal class DefaultCommGateway(
 
     override suspend fun localIdentityKeys(accountKey: String): Pair<String, String?> = withContext(Dispatchers.IO) {
         val signing = NearbyIdentity(accountKey).publicKey
-        val agreement = runCatching { NearbyPrivateIdentity(context, accountKey).publicKey }.getOrNull()
+        val agreement = context?.let { runCatching { NearbyPrivateIdentity(it, accountKey).publicKey }.getOrNull() }
         signing to agreement
     }
 
@@ -513,12 +528,13 @@ internal class DefaultCommGateway(
     }
 
     private fun readPrivateMessage(scope: CommScope, message: NearbyMessage): NearbyPrivateContent? {
+        val appContext = context ?: return null
         val config = currentCredential(scope) ?: return null
         val cacheKey = "${config.generation}|${message.id}"
         privateContentCache[cacheKey]?.let { return it }
         return runCatching {
             val identity = privateReader?.takeIf { it.first == config.account }?.second
-                ?: NearbyPrivateIdentity(context, config.account).also { privateReader = config.account to it }
+                ?: NearbyPrivateIdentity(appContext, config.account).also { privateReader = config.account to it }
             NearbyPrivate.open(config, identity, message.actor, message.recipient, message.id, message.sealedPayload)
                 ?.also {
                     if (privateContentCache.size >= 28) {

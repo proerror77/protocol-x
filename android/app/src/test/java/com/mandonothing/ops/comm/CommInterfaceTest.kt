@@ -11,6 +11,10 @@ import com.mandonothing.ops.VoiceCapturedClip
 import com.mandonothing.ops.VoiceCue
 import com.mandonothing.ops.VoiceSpeaker
 import com.mandonothing.ops.VoiceState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -224,5 +228,81 @@ class CommInterfaceTest {
         )
         assertTrue(video.ready && video.sharing && video.showingTrack)
         assertFalse(video.failed)
+    }
+
+    @Test
+    fun gatewayDispatchesRegisteredCustomAdaptersAndFailsOverOnRetryableRejections() {
+        val gateway = DefaultCommGateway(context = null, scope = CoroutineScope(SupervisorJob()), observeNearby = false)
+        val attempted = mutableListOf<CommTransportKind>()
+
+        val rnsAdapter = FakeAdapter(
+            kind = CommTransportKind.RNS_MESH,
+            reachability = CommReachability.CONNECTED,
+            handler = { outbound ->
+                attempted += CommTransportKind.RNS_MESH
+                when (outbound.text) {
+                    "fail-retryable" -> CommSendResult.Rejected("rns temporary busy", retryable = true)
+                    "fail-fatal" -> CommSendResult.Rejected("payload invalid", retryable = false)
+                    else -> CommSendResult.Accepted(outbound.id, CommTransportKind.RNS_MESH)
+                }
+            },
+        )
+        val wifiAdapter = FakeAdapter(
+            kind = CommTransportKind.WIFI_AWARE,
+            reachability = CommReachability.CONNECTED,
+            handler = { outbound ->
+                attempted += CommTransportKind.WIFI_AWARE
+                CommSendResult.Accepted(outbound.id, CommTransportKind.WIFI_AWARE)
+            },
+        )
+        gateway.registerAdapter(rnsAdapter)
+        gateway.registerAdapter(wifiAdapter)
+
+        // 1. Custom RNS_MESH adapter handles outbound directly
+        val directResult = gateway.send(
+            CommOutboundMessage(id = "m-1", scope = sampleScope, kind = CommEnvelopeKind.CHANNEL_TEXT, text = "ok"),
+        )
+        assertEquals(CommSendResult.Accepted("m-1", CommTransportKind.RNS_MESH), directResult)
+        assertEquals(listOf(CommTransportKind.RNS_MESH), attempted)
+
+        // 2. Retryable rejection on RNS_MESH fails over to WIFI_AWARE
+        attempted.clear()
+        val failoverResult = gateway.send(
+            CommOutboundMessage(
+                id = "m-2",
+                scope = sampleScope,
+                kind = CommEnvelopeKind.CHANNEL_TEXT,
+                text = "fail-retryable",
+            ),
+        )
+        assertEquals(CommSendResult.Accepted("m-2", CommTransportKind.WIFI_AWARE), failoverResult)
+        assertEquals(listOf(CommTransportKind.RNS_MESH, CommTransportKind.WIFI_AWARE), attempted)
+
+        // 3. Non-retryable rejection short-circuits without hitting WIFI_AWARE
+        attempted.clear()
+        val fatalResult = gateway.send(
+            CommOutboundMessage(
+                id = "m-3",
+                scope = sampleScope,
+                kind = CommEnvelopeKind.CHANNEL_TEXT,
+                text = "fail-fatal",
+            ),
+        )
+        assertEquals(CommSendResult.Rejected("payload invalid", retryable = false), fatalResult)
+        assertEquals(listOf(CommTransportKind.RNS_MESH), attempted)
+    }
+
+    private class FakeAdapter(
+        override val kind: CommTransportKind,
+        reachability: CommReachability,
+        private val handler: suspend (CommOutboundMessage) -> CommSendResult,
+    ) : CommTransportAdapter {
+        override val linkStatus: StateFlow<CommLinkStatus> = MutableStateFlow(
+            CommLinkStatus(kind = kind, reachability = reachability, statusLabel = reachability.name, peerCount = 1),
+        )
+
+        override fun supports(outbound: CommOutboundMessage): Boolean = true
+
+        override suspend fun send(outbound: CommOutboundMessage): CommSendResult = handler(outbound)
     }
 }

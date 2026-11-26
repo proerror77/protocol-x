@@ -96,4 +96,4 @@ All new abstractions live in `android/app/src/main/java/com/mandonothing/ops/com
   ANDROID_HOME=/opt/homebrew/share/android-commandlinetools \
   ./gradlew testDebugUnitTest --no-daemon --console=plain
   ```
-- Result: `BUILD SUCCESSFUL` — 14 test suites, 59 unit tests (`55` existing + `4` new in `com.mandonothing.ops.comm.CommInterfaceTest`), 0 skipped, 0 failures, 0 errors.
+- Result: `BUILD SUCCESSFUL` — 14 test suites, 52 unit tests (`47` existing + `5` in `com.mandonothing.ops.comm.CommInterfaceTest`), 0 skipped, 0 failures, 0 errors.
