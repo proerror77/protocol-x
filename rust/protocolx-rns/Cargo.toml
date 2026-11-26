@@ -1,0 +1,26 @@
+[package]
+name = "protocolx-rns"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Protocol X Rust Core & UniFFI bindings over personal-rns (Reticulum Network Stack)"
+
+[lib]
+name = "protocolx_rns"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = []
+bindgen-cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+required-features = ["bindgen-cli"]
+
+[dependencies]
+hex = "0.4"
+personal-rns = { version = "0.3.7", features = ["tokio-host", "tcp", "udp"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+uniffi = "0.33.0"
