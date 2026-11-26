@@ -31,6 +31,7 @@ internal class RnsLxmfTransportAdapter(
     private val inboundFlow: StateFlow<List<LxmfInboundRecord>> = RnsRuntimeService.inboundMessages,
     private val receiptFlow: SharedFlow<LxmfDeliveryReceipt> = RnsRuntimeService.deliveryReceipts,
     private val peerFlow: StateFlow<List<RnsPeerRecord>> = RnsRuntimeService.peers,
+    private val gatewayReceiptFlow: SharedFlow<org.json.JSONObject> = RnsRuntimeService.gatewayReceipts,
     private val destinationResolver: (CommOutboundMessage, List<RnsPeerRecord>) -> String? = ::defaultResolveDestination,
 ) : CommTransportAdapter {
     override val kind: CommTransportKind = CommTransportKind.RNS_MESH
@@ -40,11 +41,13 @@ internal class RnsLxmfTransportAdapter(
     )
     private val mutableEvents = MutableSharedFlow<CommEventEnvelope>(extraBufferCapacity = 64)
     private val mutableMessages = MutableStateFlow<List<CommMessageEnvelope>>(emptyList())
+    private val mutableGatewayReceipts = MutableSharedFlow<org.json.JSONObject>(extraBufferCapacity = 32)
     private var activeScope: CommScope? = null
 
     override val linkStatus: StateFlow<CommLinkStatus> = mutableLinkStatus.asStateFlow()
     val events: SharedFlow<CommEventEnvelope> = mutableEvents.asSharedFlow()
     val messages: StateFlow<List<CommMessageEnvelope>> = mutableMessages.asStateFlow()
+    val gatewayReceipts: SharedFlow<org.json.JSONObject> = mutableGatewayReceipts.asSharedFlow()
 
     init {
         scope.launch {
@@ -57,7 +60,11 @@ internal class RnsLxmfTransportAdapter(
                 inboundFlow.collect { records ->
                     val currentScope = activeScope ?: return@collect
                     val mapped = records
-                        .filter { it.eventId == currentScope.eventId && it.channelId == currentScope.channelId }
+                        .filter {
+                            it.eventId == currentScope.eventId &&
+                                it.channelId == currentScope.channelId &&
+                                it.envelopeKind != CommEnvelopeKind.CONTROL_ACK
+                        }
                         .map { RnsEnvelopeCodec.inboundToEnvelope(it, currentScope) }
                     mutableMessages.value = mapped
                     mapped.lastOrNull()?.let { mutableEvents.tryEmit(CommEventEnvelope.MessageReceived(it)) }
@@ -74,6 +81,29 @@ internal class RnsLxmfTransportAdapter(
                     )
                 }
             }
+            launch {
+                gatewayReceiptFlow.collect { receiptJson ->
+                    mutableGatewayReceipts.tryEmit(receiptJson)
+                    val targetId = receiptJson.optString("target_envelope_id")
+                    val status = receiptJson.optString("status")
+                    if (targetId.isNotBlank()) {
+                        val mappedState = when (status) {
+                            "committed" -> CommDeliveryState.SYNCED
+                            "conflict" -> CommDeliveryState.CONFLICT
+                            "expired" -> CommDeliveryState.EXPIRED
+                            "delivered" -> CommDeliveryState.DELIVERED
+                            else -> CommDeliveryState.AWAITING_RECEIPT
+                        }
+                        mutableEvents.tryEmit(
+                            CommEventEnvelope.DeliveryUpdated(
+                                messageId = targetId,
+                                state = mappedState,
+                                transport = CommTransportKind.RNS_MESH,
+                            ),
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -84,9 +114,42 @@ internal class RnsLxmfTransportAdapter(
             return
         }
         mutableMessages.value = inboundFlow.value
-            .filter { it.eventId == currentScope.eventId && it.channelId == currentScope.channelId }
+            .filter {
+                it.eventId == currentScope.eventId &&
+                    it.channelId == currentScope.channelId &&
+                    it.envelopeKind != CommEnvelopeKind.CONTROL_ACK
+            }
             .map { RnsEnvelopeCodec.inboundToEnvelope(it, currentScope) }
     }
+
+    fun isReadyFor(scope: CommScope?): Boolean {
+        if (scope == null) return false
+        val coordinator = coordinatorProvider() ?: return false
+        return coordinator.snapshot.value.running || coordinator.snapshot.value.nativeAvailable
+    }
+
+    fun markSyncedToServer(envelopeId: String) {
+        coordinatorProvider()?.markInboundSyncedToServer(envelopeId)
+    }
+
+    fun sendAttachmentResource(
+        payload: RnsResourceTransferManager.TransferPayload,
+        scope: CommScope,
+    ): RnsAttachmentTransferState? {
+        val coordinator = coordinatorProvider() ?: return null
+        val probe = CommOutboundMessage(
+            id = payload.attachmentId,
+            scope = scope,
+            kind = CommEnvelopeKind.ATTACHMENT_MEDIA,
+            captionOrTextPlaceholder(payload.caption),
+        )
+        val destination = coordinator.activeGatewayDestinationHex()
+            ?: destinationResolver(probe, peerFlow.value)
+            ?: return null
+        return coordinator.sendAttachmentResource(payload, scope, destination)
+    }
+
+    private fun captionOrTextPlaceholder(caption: String): String = caption.ifBlank { "attachment" }
 
     override fun supports(outbound: CommOutboundMessage): Boolean =
         outbound.kind in SUPPORTED_KINDS
@@ -94,7 +157,11 @@ internal class RnsLxmfTransportAdapter(
     override suspend fun send(outbound: CommOutboundMessage): CommSendResult {
         val coordinator = coordinatorProvider()
             ?: return CommSendResult.Rejected("RNS 运行时服务尚未就绪", retryable = true)
-        val destination = destinationResolver(outbound, peerFlow.value)
+        val destination = if (outbound.kind == CommEnvelopeKind.TASK_ACTION || outbound.kind == CommEnvelopeKind.ATTACHMENT_MEDIA) {
+            coordinator.activeGatewayDestinationHex() ?: destinationResolver(outbound, peerFlow.value)
+        } else {
+            destinationResolver(outbound, peerFlow.value) ?: coordinator.activeGatewayDestinationHex()
+        }
             ?: return CommSendResult.Rejected("未发现可达的 RNS 目标节点", retryable = true)
         return coordinator.enqueueAndSend(outbound, destination)
     }

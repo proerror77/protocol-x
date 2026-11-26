@@ -55,6 +55,8 @@ class RnsRuntimeService : Service() {
             launch { coordinator.snapshot.collect { sharedSnapshot.value = it } }
             launch { coordinator.inboundMessages.collect { sharedInbound.value = it } }
             launch { coordinator.peers.collect { sharedPeers.value = it } }
+            launch { coordinator.ifacPolicy.collect { sharedIfacPolicy.value = it } }
+            launch { coordinator.gatewayReceipts.collect { sharedGatewayReceipts.tryEmit(it) } }
             coordinator.deliveryReceipts.collect { sharedReceipts.tryEmit(it) }
         }
     }
@@ -154,6 +156,16 @@ class RnsRuntimeService : Service() {
         val event = intent.getStringExtra(EXTRA_EVENT) ?: return null
         val channel = intent.getStringExtra(EXTRA_CHANNEL) ?: return null
         val title = intent.getStringExtra(EXTRA_TITLE) ?: channel
+        val ifacNet = intent.getStringExtra(EXTRA_IFAC_NET)?.takeIf { it.isNotBlank() }
+        val ifacPass = intent.getStringExtra(EXTRA_IFAC_PASS)?.takeIf { it.isNotBlank() }
+        val ifacPolicy = if (ifacNet != null && ifacPass != null) {
+            RnsIfacPolicy(
+                networkName = ifacNet,
+                passphrase = ifacPass,
+                ifacSizeBytes = intent.getIntExtra(EXTRA_IFAC_SIZE, 16),
+                requirePrivateIfac = intent.getBooleanExtra(EXTRA_IFAC_PRIVATE, true),
+            )
+        } else null
         return RnsRuntimeConfig(
             accountKey = account,
             eventId = event,
@@ -167,6 +179,8 @@ class RnsRuntimeService : Service() {
             tcpConnectAddrs = intent.getStringArrayListExtra(EXTRA_TCP_CONNECT).orEmpty(),
             propagationNodeHashHex = intent.getStringExtra(EXTRA_PROPAGATION_NODE),
             enableTransportRelay = intent.getBooleanExtra(EXTRA_RELAY, false),
+            ifac = ifacPolicy,
+            revokedIdentityHashes = intent.getStringArrayListExtra(EXTRA_REVOKED).orEmpty(),
         )
     }
 
@@ -187,6 +201,11 @@ class RnsRuntimeService : Service() {
         private const val EXTRA_TCP_CONNECT = "tcp_connect"
         private const val EXTRA_PROPAGATION_NODE = "propagation_node"
         private const val EXTRA_RELAY = "relay"
+        private const val EXTRA_IFAC_NET = "ifac_net"
+        private const val EXTRA_IFAC_PASS = "ifac_pass"
+        private const val EXTRA_IFAC_SIZE = "ifac_size"
+        private const val EXTRA_IFAC_PRIVATE = "ifac_private"
+        private const val EXTRA_REVOKED = "revoked"
 
         @Volatile
         internal var engineFactory: ((Context) -> RnsCoreEngine)? = null
@@ -199,11 +218,15 @@ class RnsRuntimeService : Service() {
         private val sharedInbound = MutableStateFlow<List<LxmfInboundRecord>>(emptyList())
         private val sharedPeers = MutableStateFlow<List<RnsPeerRecord>>(emptyList())
         private val sharedReceipts = MutableSharedFlow<LxmfDeliveryReceipt>(extraBufferCapacity = 64)
+        private val sharedIfacPolicy = MutableStateFlow<RnsIfacPolicy?>(null)
+        private val sharedGatewayReceipts = MutableSharedFlow<org.json.JSONObject>(extraBufferCapacity = 32)
 
         internal val snapshot: StateFlow<RnsRuntimeSnapshot> = sharedSnapshot.asStateFlow()
         internal val inboundMessages: StateFlow<List<LxmfInboundRecord>> = sharedInbound.asStateFlow()
         internal val peers: StateFlow<List<RnsPeerRecord>> = sharedPeers.asStateFlow()
         internal val deliveryReceipts: SharedFlow<LxmfDeliveryReceipt> = sharedReceipts.asSharedFlow()
+        internal val ifacPolicy: StateFlow<RnsIfacPolicy?> = sharedIfacPolicy.asStateFlow()
+        internal val gatewayReceipts: SharedFlow<org.json.JSONObject> = sharedGatewayReceipts.asSharedFlow()
 
         internal fun start(context: Context, config: RnsRuntimeConfig): Boolean = runCatching {
             val intent = Intent(context, RnsRuntimeService::class.java)
@@ -219,6 +242,11 @@ class RnsRuntimeService : Service() {
                 .putStringArrayListExtra(EXTRA_TCP_CONNECT, ArrayList(config.tcpConnectAddrs))
                 .putExtra(EXTRA_PROPAGATION_NODE, config.propagationNodeHashHex)
                 .putExtra(EXTRA_RELAY, config.enableTransportRelay)
+                .putExtra(EXTRA_IFAC_NET, config.ifac?.networkName)
+                .putExtra(EXTRA_IFAC_PASS, config.ifac?.passphrase)
+                .putExtra(EXTRA_IFAC_SIZE, config.ifac?.ifacSizeBytes ?: 16)
+                .putExtra(EXTRA_IFAC_PRIVATE, config.ifac?.requirePrivateIfac ?: true)
+                .putStringArrayListExtra(EXTRA_REVOKED, ArrayList(config.revokedIdentityHashes))
             context.startForegroundService(intent)
         }.isSuccess
 

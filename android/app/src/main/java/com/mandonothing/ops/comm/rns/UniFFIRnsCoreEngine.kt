@@ -1,5 +1,6 @@
 package com.mandonothing.ops.comm.rns
 
+import uniffi.protocolx_rns.IfacConfig
 import uniffi.protocolx_rns.LxmfAttachment
 import uniffi.protocolx_rns.LxmfDeliveryMode as UniFfiDeliveryMode
 import uniffi.protocolx_rns.LxmfDeliveryReceipt as UniFfiDeliveryReceipt
@@ -10,6 +11,7 @@ import uniffi.protocolx_rns.NodeConfig
 import uniffi.protocolx_rns.RnsEventListener
 import uniffi.protocolx_rns.RnsInboundEvent
 import uniffi.protocolx_rns.RnsNode
+import uniffi.protocolx_rns.bindActorDeviceToRns
 
 /**
  * [RnsCoreEngine] implementation backed by Rust `protocolx_rns` via Mozilla UniFFI bindings.
@@ -25,6 +27,8 @@ internal class UniFFIRnsCoreEngine : RnsCoreEngine {
 
     private var node: RnsNode? = null
 
+    internal fun activeNode(): RnsNode? = node
+
     override fun start(
         config: RnsRuntimeConfig,
         identitySecret: ByteArray?,
@@ -32,6 +36,14 @@ internal class UniFFIRnsCoreEngine : RnsCoreEngine {
     ): RnsCoreStatus {
         check(isAvailable) { unavailableReason ?: "protocolx_rns native library not loaded" }
         stop()
+        val ifacConfig = config.ifac?.let {
+            IfacConfig(
+                networkName = it.networkName,
+                passphrase = it.passphrase,
+                ifacSizeBytes = it.ifacSizeBytes.coerceIn(1, 64).toUByte(),
+                requirePrivateIfac = it.requirePrivateIfac,
+            )
+        }
         val nodeConfig = NodeConfig(
             identitySecret = identitySecret,
             appName = "protocolx",
@@ -46,6 +58,8 @@ internal class UniFFIRnsCoreEngine : RnsCoreEngine {
             storageDir = config.storageDir,
             lxmfDisplayName = config.lxmfDisplayName ?: config.actorId.ifBlank { config.channelName },
             propagationNodeHex = config.propagationNodeHashHex,
+            ifac = ifacConfig,
+            revokedIdentityHashes = config.revokedIdentityHashes,
         )
         val created = RnsNode(nodeConfig)
         created.setListener(
@@ -132,6 +146,47 @@ internal class UniFFIRnsCoreEngine : RnsCoreEngine {
         return current.persistedLxmfReceipts().map(::mapReceipt)
     }
 
+    override fun rotateIfacCredentials(policy: RnsIfacPolicy) {
+        node?.rotateIfacCredentials(
+            IfacConfig(
+                networkName = policy.networkName,
+                passphrase = policy.passphrase,
+                ifacSizeBytes = policy.ifacSizeBytes.coerceIn(1, 64).toUByte(),
+                requirePrivateIfac = policy.requirePrivateIfac,
+            ),
+        )
+    }
+
+    override fun revokePeer(identityOrDestHashHex: String, reason: String?) {
+        node?.revokePeer(identityOrDestHashHex, reason)
+    }
+
+    override fun revokedPeers(): List<String> = node?.revokedPeers().orEmpty()
+
+    override fun ed25519PublicKeyHex(): String {
+        val pub = node?.let { runCatching { it.identity().publicKeyBytes() }.getOrNull() } ?: return ""
+        val slice = if (pub.size >= 64) pub.copyOfRange(32, 64) else pub
+        return slice.joinToString("") { "%02x".format(it) }
+    }
+
+    override fun bindActorDevice(actorId: String, deviceTokenHash: String): RnsActorDeviceBinding? {
+        val current = node ?: return null
+        val destHash = runCatching { current.lxmfDestinationHashHex() }.getOrDefault(current.destinationHashHex())
+        val idHash = current.identityHashHex()
+        val edHex = ed25519PublicKeyHex()
+        val bound = runCatching {
+            bindActorDeviceToRns(actorId, deviceTokenHash, destHash, idHash, edHex)
+        }.getOrNull() ?: return null
+        return RnsActorDeviceBinding(
+            actorId = bound.actorId,
+            deviceTokenHash = bound.deviceTokenHash,
+            rnsDestinationHashHex = bound.rnsDestinationHashHex,
+            rnsIdentityHashHex = bound.rnsIdentityHashHex,
+            ed25519PublicKeyHex = bound.ed25519PublicKeyHex,
+            bindingDigestHex = bound.bindingDigestHex,
+        )
+    }
+
     override fun status(): RnsCoreStatus {
         val current = node ?: return RnsCoreStatus(running = false)
         val raw = current.status()
@@ -165,6 +220,8 @@ internal class UniFFIRnsCoreEngine : RnsCoreEngine {
         is RnsInboundEvent.SinglePacketReceived,
         is RnsInboundEvent.LinkPacketReceived,
         is RnsInboundEvent.ResourceReceived,
+        is RnsInboundEvent.PttFrameReceived,
+        is RnsInboundEvent.PttFloorEvent,
         -> null
     }
 

@@ -25,6 +25,8 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
     var channelFeedSupported = true
         private set
 
+    val deviceTokenHash: String by lazy { fingerprint(accessCode) }
+
     suspend fun inspectInvite(code: String) = request("/api/field/invitation", JSONObject().put("code", code))
     suspend fun bind(code: String) = request("/api/field/bind", JSONObject().put("code", code))
     suspend fun passkeyStatus() = request("/api/field/passkeys")
@@ -43,18 +45,53 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
     suspend fun directory(eventId: String) = request(fieldPath(eventId, "directory")).also {
         privateCallsEnabled = it.optBoolean("private_calls_enabled", privateCallsEnabled)
     }
-    suspend fun nearbyCredentials(event: String, publicKey: String, agreementPublicKey: String? = null): JSONObject {
+    suspend fun nearbyCredentials(
+        event: String,
+        publicKey: String,
+        agreementPublicKey: String? = null,
+        rnsIdentity: JSONObject? = null,
+    ): JSONObject {
         val path = fieldPath(event, "nearby")
         val body = JSONObject().put("public_key", publicKey)
         if (agreementPublicKey != null) body.put("agreement_key", agreementPublicKey)
+        if (rnsIdentity != null) body.put("rns_identity", rnsIdentity)
         return try {
             request(path, body, timeoutMs = 5_000)
         } catch (error: OpsException) {
-            if (agreementPublicKey == null || error.status != 422 || !error.unknownAgreementKey) throw error
-            body.remove("agreement_key")
+            if (error.status != 422 || (!error.unknownAgreementKey && !error.unknownRnsIdentity)) throw error
+            if (error.unknownAgreementKey) body.remove("agreement_key")
+            if (error.unknownRnsIdentity) body.remove("rns_identity")
             request(path, body, timeoutMs = 5_000)
         }
     }
+
+    suspend fun nearbyRevocations(event: String): JSONObject =
+        request(fieldPath(event, "nearby/revocations"), timeoutMs = 5_000)
+
+    suspend fun submitRnsEnvelope(envelope: JSONObject): JSONObject =
+        request("/api/rns/v1/envelopes", envelope, timeoutMs = 10_000, idempotencyKey = envelope.optString("idempotency_key").takeIf { it.isNotBlank() })
+
+    suspend fun submitRnsEnvelopesBatch(envelopes: List<JSONObject>): JSONObject =
+        request(
+            "/api/rns/v1/envelopes/batch",
+            JSONObject().put("envelopes", org.json.JSONArray(envelopes)),
+            timeoutMs = 15_000,
+        )
+
+    suspend fun confirmArrivalStage(
+        eventId: String,
+        planId: String,
+        stage: String,
+        expectedVersion: Int,
+        idempotencyKey: String,
+    ): JSONObject = request(
+        eventPath(eventId, "arrival-plans/${segment(planId)}/stages"),
+        JSONObject()
+            .put("stage", stage)
+            .put("expected_version", expectedVersion)
+            .put("idempotency_key", idempotencyKey),
+        idempotencyKey = idempotencyKey,
+    )
 
     suspend fun createChannel(eventId: String, name: String) = request(fieldPath(eventId, "channels"), JSONObject().put("name", name))
     suspend fun channelAccess(eventId: String, channel: String) =
@@ -427,15 +464,32 @@ internal class OpsClient(address: String, private val accessCode: String, allowL
         val failure = error?.let { runCatching { JSONObject(it) }.getOrNull() }
         val detail = failure?.optString("detail")
         val message = detail?.takeIf { it.isNotBlank() && !it.startsWith("[") }
-        val unknownAgreementKey = if (status == 422) {
+        var unknownAgreementKey = false
+        var unknownRnsIdentity = false
+        if (status == 422) {
             val errors = failure?.optJSONArray("detail")
-            val field = errors?.optJSONObject(0)
-            val location = field?.optJSONArray("loc")
-            errors?.length() == 1 && field?.optString("type") == "extra_forbidden" &&
-                location?.length() == 2 && location.optString(0) == "body" &&
-                location.optString(1) == "agreement_key"
-        } else false
-        return OpsException(status, message ?: "请求失败（HTTP $status）", unknownAgreementKey)
+            val count = errors?.length() ?: 0
+            for (i in 0 until count) {
+                val field = errors?.optJSONObject(i) ?: continue
+                val location = field.optJSONArray("loc") ?: continue
+                if (field.optString("type") == "extra_forbidden" &&
+                    location.length() == 2 && location.optString(0) == "body"
+                ) {
+                    when (location.optString(1)) {
+                        "agreement_key" -> unknownAgreementKey = true
+                        "rns_identity" -> unknownRnsIdentity = true
+                    }
+                }
+            }
+        }
+        val conflictPayload = if (status == 409) failure else null
+        return OpsException(
+            status = status,
+            message = message ?: "请求失败（HTTP $status）",
+            unknownAgreementKey = unknownAgreementKey,
+            unknownRnsIdentity = unknownRnsIdentity,
+            conflictPayload = conflictPayload,
+        )
     }
 
     private fun connection(path: String, timeoutMs: Int) = (URI(base + path).toURL().openConnection() as HttpURLConnection).apply {
@@ -452,7 +506,13 @@ internal data class RadioTarget(val id: String, val name: String, val kind: Stri
 
 internal data class MediaSession(val id: String, val url: String, val token: String)
 
-internal class OpsException(val status: Int, message: String, val unknownAgreementKey: Boolean = false) : IOException(message)
+internal class OpsException(
+    val status: Int,
+    message: String,
+    val unknownAgreementKey: Boolean = false,
+    val unknownRnsIdentity: Boolean = false,
+    val conflictPayload: JSONObject? = null,
+) : IOException(message)
 
 internal fun validateMediaUrl(address: String, allowLocal: Boolean) {
     val url = URI(address)

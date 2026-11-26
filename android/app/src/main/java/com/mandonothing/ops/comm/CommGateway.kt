@@ -95,6 +95,22 @@ internal interface CommGateway {
     fun provisionCredentials(accountKey: String, eventId: String, leases: JSONObject)
     fun clearCredentials(accountKey: String, eventId: String)
     suspend fun localIdentityKeys(accountKey: String): Pair<String, String?>
+    fun rnsIdentityPayload(accountKey: String, eventId: String): JSONObject? = null
+    fun bindRnsIdentity(accountKey: String, eventId: String, actorId: String, deviceTokenHash: String) {}
+    fun applyRevocations(eventId: String, payload: JSONObject) {}
+    fun sendAttachmentResource(
+        attachmentId: String,
+        scope: CommScope,
+        targetKind: String,
+        mediaType: String,
+        caption: String,
+        posterBytes: ByteArray,
+        contentBytes: ByteArray,
+        taskId: String = "",
+        durationMs: Int? = null,
+    ): Boolean = false
+    fun markEnvelopeSynced(envelopeId: String) {}
+    fun gatewayReceipts(): SharedFlow<JSONObject>? = null
     fun setReceiveMuted(channelId: String, muted: Boolean)
     fun decodePrivatePhoto(bytes: ByteArray): android.graphics.Bitmap?
     fun formatDiagnostics(timeFormatter: (Long) -> String): String

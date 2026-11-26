@@ -89,5 +89,10 @@ internal interface RnsCoreEngine {
     fun fetchPropagatedLxmf(propagationNodeHashHex: String? = null): List<RnsCoreEvent.LxmfReceived> = emptyList()
     fun persistedLxmfMessages(): List<RnsCoreEvent.LxmfReceived> = emptyList()
     fun persistedLxmfReceipts(): List<RnsCoreEvent.DeliveryUpdated> = emptyList()
+    fun rotateIfacCredentials(policy: RnsIfacPolicy) {}
+    fun revokePeer(identityOrDestHashHex: String, reason: String? = null) {}
+    fun revokedPeers(): List<String> = emptyList()
+    fun bindActorDevice(actorId: String, deviceTokenHash: String): RnsActorDeviceBinding? = null
+    fun ed25519PublicKeyHex(): String = ""
     fun status(): RnsCoreStatus
 }

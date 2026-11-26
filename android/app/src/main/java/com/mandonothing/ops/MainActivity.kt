@@ -70,6 +70,8 @@ import com.mandonothing.ops.comm.PttPhase
 import com.mandonothing.ops.comm.PttSpeaker
 import com.mandonothing.ops.comm.VideoChannelState
 import com.mandonothing.ops.comm.VideoChannelTransport
+import com.mandonothing.ops.comm.rns.Rns409Resolution
+import com.mandonothing.ops.comm.rns.RnsOfflineSyncReconciler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -537,6 +539,33 @@ class MainActivity : Activity() {
         commFallback.resume()
         commObserver = scope.launch {
             launch { commGateway.networkState.collect { updateChannelComposer() } }
+            launch {
+                commGateway.gatewayReceipts()?.collect { receipt ->
+                    val targetId = receipt.optString("target_envelope_id")
+                    val status = receipt.optString("status")
+                    val active = client ?: return@collect
+                    if (targetId.isBlank()) return@collect
+                    val matched = queuedField.firstOrNull { it.envelopeId == targetId || it.id == targetId } ?: return@collect
+                    when (status) {
+                        "committed" -> {
+                            fieldOffline.complete(matched)
+                            queuedField = fieldOffline.pending(active)
+                            if (section == Section.TASK_DETAIL) renderTaskDetail()
+                            refresh(automatic = true)
+                        }
+                        "conflict" -> {
+                            fieldOffline.conflict(
+                                matched,
+                                receipt.optJSONObject("detail")?.optString("detail").orEmpty().ifBlank { "中台返回冲突，请核对任务状态" },
+                                receipt.optJSONObject("detail")?.toString().orEmpty(),
+                            )
+                            queuedField = fieldOffline.pending(active)
+                            if (section == Section.TASK_DETAIL) renderTaskDetail()
+                            refresh(automatic = true)
+                        }
+                    }
+                }
+            }
             commGateway.messages.collect { renderConversation() }
         }
         updateBackHandler()
@@ -1621,7 +1650,10 @@ class MainActivity : Activity() {
         val selected = eventId ?: return
         if (!visible) return
         workspaceSync = scope.launch {
-            var revision: String? = null
+            var revision: String? = if (active.bound) {
+                fieldOffline.checkpoints(active, selected)?.optString("workspace_revision")
+                    ?.takeIf { it.isNotBlank() && it != "null" }
+            } else null
             var lastSyncAt = android.os.SystemClock.elapsedRealtime()
             while (visible && active === client && selected == eventId) {
                 val next = try {
@@ -1637,6 +1669,9 @@ class MainActivity : Activity() {
                     if (!visible || active !== client || selected != eventId) return@launch
                     refresh(automatic = true)
                     lastSyncAt = now
+                }
+                if (next != null && next != revision && active.bound) {
+                    runCatching { fieldOffline.saveCheckpoints(active, selected, next, channelCursor) }
                 }
                 revision = next
                 if (next == null) delay(WORKSPACE_RETRY_MS)
@@ -1998,8 +2033,12 @@ class MainActivity : Activity() {
         }
         for (entry in waiting) {
             val label = if (entry.action == HELP) "求助" else "任务确认"
-            put(taskDetails, text(if (entry.conflict.isBlank()) "$label · 待同步" else "$label · 待核对 · " + entry.conflict,
-                14, ACCENT), 5)
+            val stateText = when {
+                entry.conflict.isNotBlank() -> "$label · 待核对 · " + entry.conflict
+                entry.deliveryState == "MESH_PROPAGATING" -> "$label · 已通过附近节点转发 · 待指挥台确认"
+                else -> "$label · 本机已保存 · 待同步"
+            }
+            put(taskDetails, text(stateText, 14, ACCENT), 5)
             if (entry.conflict.isNotBlank()) put(taskDetails, linkButton("放弃本机待核对操作").apply {
                 setOnClickListener {
                     AlertDialog.Builder(this@MainActivity).setTitle("放弃本机待核对操作？")
@@ -2195,6 +2234,7 @@ class MainActivity : Activity() {
                 }
                 if (delta != null) {
                     channelCursor = delta.getString("cursor")
+                    runCatching { fieldOffline.saveCheckpoints(connected, event, null, channelCursor) }
                     if (!delta.optBoolean("changed")) {
                         if (includeAudio) voiceService?.observeCaptionServer(connected, event, target, emptyList())
                         showNewestDispatchPrompt()
@@ -2254,6 +2294,12 @@ class MainActivity : Activity() {
                 agentIncidents = suggestions
                 agentActivity = agentUpdates
                 channelAttachments = attachments
+                attachments.forEach { att ->
+                    att.optString("id").takeIf { it.isNotBlank() }?.let(commGateway::markEnvelopeSynced)
+                }
+                speech.forEach { sp ->
+                    sp.optString("track_sid").takeIf { it.isNotBlank() }?.let(commGateway::markEnvelopeSynced)
+                }
                 if (changed) renderConversation()
                 warmRecentOriginals(connected, event, target, incoming)
                 showNewestDispatchPrompt()
@@ -2640,11 +2686,17 @@ class MainActivity : Activity() {
         val commEnvelopes = if (commScope != null && commGateway.isSessionReady(commScope)) {
             commGateway.messages.value.associateBy { it.id }
         } else emptyMap()
-        val nearby = commEnvelopes.values.map { envelope ->
-            JSONObject().put("source", "comm").put("created_at", Instant.ofEpochMilli(envelope.createdAtMs).toString())
-                .put("id", envelope.id).put("mine", envelope.isMine)
-        }
         val publishedIds = channelAttachments.map { it.getString("id") }.toSet()
+        val pendingAttIds = pendingChannelAttachments.map { it.id }.toSet()
+        val nearby = commEnvelopes.values
+            .filterNot { envelope ->
+                envelope.kind == CommEnvelopeKind.ATTACHMENT_MEDIA &&
+                    (envelope.id in publishedIds || envelope.id in pendingAttIds)
+            }
+            .map { envelope ->
+                JSONObject().put("source", "comm").put("created_at", Instant.ofEpochMilli(envelope.createdAtMs).toString())
+                    .put("id", envelope.id).put("mine", envelope.isMine)
+            }
         val media = channelAttachments + pendingChannelAttachments.filter {
             it.event == event && it.channel == target?.id && it.id !in publishedIds
         }.map { it.item() }
@@ -3136,7 +3188,7 @@ class MainActivity : Activity() {
         val target = radio?.takeIf { it.kind == "group" } ?: return
         if (channelRecipientActor != null || !directoryData.optBoolean("channel_attachments_enabled")) return
         try {
-            channelAttachmentFiles.queue(draft, active.profile.getString("actor"), active.origin, event,
+            val queuedEntry = channelAttachmentFiles.queue(draft, active.profile.getString("actor"), active.origin, event,
                 target.id, channelText.text.toString().trim())
             channelMediaDraft = null
             channelMediaPreview.setImageDrawable(null)
@@ -3146,6 +3198,24 @@ class MainActivity : Activity() {
             refreshPendingChannelAttachments()
             renderConversation()
             scrollToLatestConversation()
+            val targetScope = activeCommScope()
+            if (targetScope != null && (!workspaceOnline || commGateway.networkState.value.hasAnyPeerLink)) {
+                scope.launch(Dispatchers.IO) {
+                    val poster = runCatching { queuedEntry.draft.poster.readBytes() }.getOrDefault(ByteArray(0))
+                    val content = runCatching { queuedEntry.draft.content.readBytes() }.getOrNull() ?: return@launch
+                    val targetKind = if (queuedEntry.draft.type == CHANNEL_VIDEO_TYPE) "channel_video" else "channel_photo"
+                    commGateway.sendAttachmentResource(
+                        attachmentId = queuedEntry.id,
+                        scope = targetScope,
+                        targetKind = targetKind,
+                        mediaType = queuedEntry.draft.type,
+                        caption = queuedEntry.caption,
+                        posterBytes = poster,
+                        contentBytes = content,
+                        durationMs = queuedEntry.draft.durationMs,
+                    )
+                }
+            }
             flushChannelAttachments()
         } catch (_: Exception) {
             channelError("无法保存附件，请重试")
@@ -3171,6 +3241,7 @@ class MainActivity : Activity() {
                 try {
                     val published = active.publishChannelAttachment(entry)
                     val removed = channelAttachmentFiles.remove(entry.draft)
+                    commGateway.markEnvelopeSynced(entry.id)
                     if (client === active && eventId == entry.event && radio?.id == entry.channel)
                         channelAttachments = listOf(published) + channelAttachments.filter { it.getString("id") != entry.id }
                     if (!removed) break
@@ -3588,9 +3659,17 @@ class MainActivity : Activity() {
         nearbyProvision = scope.launch {
             try {
                 val (publicKey, agreement) = commGateway.localIdentityKeys(active.localSessionKey)
-                val leases = active.nearbyCredentials(event, publicKey, agreement)
+                val rnsIdentity = commGateway.rnsIdentityPayload(active.localSessionKey, event)
+                val leases = active.nearbyCredentials(event, publicKey, agreement, rnsIdentity)
                 if (active !== client || event != eventId) return@launch
                 commGateway.provisionCredentials(active.localSessionKey, event, leases)
+                val actor = active.profile.optString("actor")
+                if (actor.isNotBlank()) {
+                    commGateway.bindRnsIdentity(active.localSessionKey, event, actor, active.deviceTokenHash)
+                }
+                runCatching { active.nearbyRevocations(event) }.getOrNull()?.let { revocations ->
+                    commGateway.applyRevocations(event, revocations)
+                }
                 commGateway.setServerNearbySupported(true)
                 if (visible) commFallback.resume(refresh = true)
             } catch (error: CancellationException) {
@@ -4669,8 +4748,23 @@ class MainActivity : Activity() {
                             check(output.size() <= 1_000_000) { "照片超过上传大小限制，试着减少画面细节" }
                             output.toByteArray()
                         }
-                        photoOutbox.add(request.client.profile.getString("actor"), request.client.origin,
+                        val photoEntry = photoOutbox.add(request.client.profile.getString("actor"), request.client.origin,
                             request.event, request.task, jpeg)
+                        val targetScope = activeCommScope()
+                        if (targetScope != null && (!workspaceOnline || commGateway.networkState.value.hasAnyPeerLink)) {
+                            scope.launch(Dispatchers.IO) {
+                                commGateway.sendAttachmentResource(
+                                    attachmentId = photoEntry.id,
+                                    scope = targetScope,
+                                    targetKind = "task_photo",
+                                    mediaType = "image/jpeg",
+                                    caption = request.title,
+                                    posterBytes = ByteArray(0),
+                                    contentBytes = jpeg,
+                                    taskId = request.task,
+                                )
+                            }
+                        }
                         photoStatus.text = "照片待发送"
                         flushPhotoOutbox()
                     } catch (error: Exception) {
@@ -4692,11 +4786,17 @@ class MainActivity : Activity() {
                 try {
                     active.uploadPhoto(entry)
                     photoOutbox.complete(entry)
+                    commGateway.markEnvelopeSynced(entry.id)
                     if (active === client) photoStatus.text = "照片已送达任务"
                 } catch (error: CancellationException) {
                     throw error
-                } catch (_: Exception) {
-                    if (active === client) photoStatus.text = "照片待发送，可在恢复联网后重试"
+                } catch (error: Exception) {
+                    if (error is OpsException && error.status == 409) {
+                        photoOutbox.complete(entry)
+                        commGateway.markEnvelopeSynced(entry.id)
+                    } else if (active === client) {
+                        photoStatus.text = "照片待发送，可在恢复联网后重试"
+                    }
                     // A rejected entry should not prevent other tasks from syncing.
                 }
             }
@@ -4707,6 +4807,16 @@ class MainActivity : Activity() {
         val key = task.getJSONObject("ref").getString("id")
         val list = active.photos(event, key).getJSONArray("items").objects()
         if (active !== client || event != eventId) return@fieldCall
+        val syncedIds = list.mapNotNull { it.optString("id").takeIf(String::isNotBlank) }.toSet()
+        if (syncedIds.isNotEmpty() && active.bound) {
+            val owner = active.profile.optString("actor")
+            photoOutbox.pending(owner, active.origin)
+                .filter { it.id in syncedIds }
+                .forEach {
+                    photoOutbox.complete(it)
+                    commGateway.markEnvelopeSynced(it.id)
+                }
+        }
         val dialog = AlertDialog.Builder(this).setTitle("任务照片")
         if (list.isEmpty()) dialog.setMessage("还没有送达的照片")
         else dialog.setItems(list.map { it.getString("speaker") + " · " + recordTime(it.getString("sent_at")) }.toTypedArray()) { _, index ->
@@ -4884,13 +4994,34 @@ class MainActivity : Activity() {
         receipts = receipts.filterNot { it.optString("id") == receipt.getString("id") } + receipt
     }
 
-    private suspend fun deliverQueued(active: OpsClient, item: FieldOfflineStore.Queued): JSONObject =
-        if (item.action == HELP) active.requestAssistance(item.event, item.ref, item.id, item.parameters.optString("note"))
-        else active.action(item.event, item.action, item.ref, item.version, item.id, item.parameters)
+    private suspend fun deliverQueued(active: OpsClient, item: FieldOfflineStore.Queued): JSONObject {
+        if (item.deliveryState == "MESH_PROPAGATING" && item.action != HELP) {
+            val actor = active.profile.optString("actor")
+            val envelope = RnsOfflineSyncReconciler.buildTaskEnvelope(
+                entry = item,
+                actor = actor,
+                deviceId = active.deviceTokenHash,
+                originRadio = "HTTPS",
+                channelId = radio?.id,
+            )
+            try {
+                val res = active.submitRnsEnvelope(envelope)
+                return res.optJSONObject("result") ?: res.optJSONObject("receipt") ?: res
+            } catch (error: OpsException) {
+                if (error.status !in setOf(404, 405)) throw error
+            }
+        }
+        return if (item.action == HELP) {
+            active.requestAssistance(item.event, item.ref, item.idempotencyKey, item.parameters.optString("note"))
+        } else {
+            active.action(item.event, item.action, item.ref, item.version, item.idempotencyKey, item.parameters)
+        }
+    }
 
     private fun applyQueued(item: FieldOfflineStore.Queued, result: JSONObject) {
         if (item.action == HELP) {
-            messages = messages.filterNot { it.optString("id") == result.getString("id") } + result
+            val msgId = result.optString("id").ifBlank { item.id }
+            messages = messages.filterNot { it.optString("id") == msgId } + result
             val active = client
             val channel = item.parameters.optString("nearby_channel")
             if (active != null && channel.isNotEmpty()) {
@@ -4899,26 +5030,41 @@ class MainActivity : Activity() {
                     runCatching { commGateway.markAssistanceSynced(targetScope, item.id) }
                 }
             }
-        } else rememberReceipt(result)
+        } else {
+            if (result.has("id")) rememberReceipt(result)
+            commGateway.markEnvelopeSynced(item.envelopeId)
+        }
         fieldOffline.complete(item)
     }
 
-    private fun shareAssistance(active: OpsClient, item: FieldOfflineStore.Queued): Boolean {
-        val channel = item.parameters.optString("nearby_channel")
-        if (item.action != HELP || channel.isBlank()) return false
-        val targetScope = CommScope(item.event, channel, "", "group", active.localSessionKey)
+    private fun shareQueuedOverRns(active: OpsClient, item: FieldOfflineStore.Queued): Boolean {
+        val channel = item.parameters.optString("nearby_channel").takeIf { it.isNotBlank() } ?: radio?.id.orEmpty()
+        if (channel.isBlank()) return false
+        val targetScope = CommScope(item.event, channel, "", "group", active.localSessionKey, active.profile.optString("actor"))
         if (!commGateway.isSessionReady(targetScope)) return false
-        val note = item.parameters.optString("note").ifBlank { "现场需要协助" }
+        val envelope = RnsOfflineSyncReconciler.buildTaskEnvelope(
+            entry = item,
+            actor = active.profile.optString("actor"),
+            deviceId = active.deviceTokenHash,
+            originRadio = "RNS_IP",
+            channelId = channel,
+        )
+        val note = if (item.action == HELP) item.parameters.optString("note").ifBlank { "现场需要协助" } else envelope.toString()
         val result = commGateway.send(
             CommOutboundMessage(
-                id = item.id,
+                id = item.envelopeId,
                 scope = targetScope,
-                kind = CommEnvelopeKind.ASSISTANCE_ALERT,
+                kind = if (item.action == HELP) CommEnvelopeKind.ASSISTANCE_ALERT else CommEnvelopeKind.TASK_ACTION,
                 text = note,
-                assistance = true,
+                assistance = item.action == HELP,
+                idempotencyKey = item.idempotencyKey,
             ),
         )
-        return result !is CommSendResult.Rejected
+        if (result !is CommSendResult.Rejected) {
+            runCatching { fieldOffline.updateDeliveryState(item, "MESH_PROPAGATING") }
+            return true
+        }
+        return false
     }
 
     private fun retryable(error: Exception) = when (error) {
@@ -4929,7 +5075,14 @@ class MainActivity : Activity() {
 
     private fun submitQueued(event: String, ref: JSONObject, version: Int, kind: String, parameters: JSONObject,
                              nearby: Boolean = false) {
-        if (queuedField.any { it.event == event && it.ref.refKey() == ref.refKey() && (it.action == HELP) == (kind == HELP) }) {
+        val keyRef = ref.refKey()
+        val hasConflictOrDup = queuedField.any {
+            it.event == event && it.ref.refKey() == keyRef && (
+                it.conflict.isNotBlank() ||
+                    ((it.action == HELP) == (kind == HELP) && it.action == kind && it.parameters.toString() == parameters.toString())
+                )
+        }
+        if (hasConflictOrDup) {
             actionFeedback.text = "本任务有待同步或待核对的操作"
             return
         }
@@ -4939,9 +5092,12 @@ class MainActivity : Activity() {
             }
             val entry = fieldOffline.stage(active, current, ref, version, kind, parameters)
             queuedField = fieldOffline.pending(active)
-            val saved = shareAssistance(active, entry)
-            if (!workspaceOnline) return@mutate if (nearby && !saved)
-                "求助已保存待同步 · 附近通信暂不可用" else "本机已保存 · 待同步"
+            val savedOverMesh = shareQueuedOverRns(active, entry)
+            if (!workspaceOnline) return@mutate when {
+                nearby && !savedOverMesh -> "求助已保存待同步 · 附近通信暂不可用"
+                savedOverMesh -> "已通过附近节点转发 · 待指挥台确认"
+                else -> "本机已保存 · 待同步"
+            }
             try {
                 applyQueued(entry, deliverQueued(active, entry))
                 "服务器已确认，查看回执"
@@ -4950,8 +5106,19 @@ class MainActivity : Activity() {
             } catch (error: Exception) {
                 if (retryable(error) || error is OpsException && error.status == 401) {
                     workspaceOnline = false
-                commGateway.setServerReachable(false)
-                    "本机已保存 · 待同步"
+                    commGateway.setServerReachable(false)
+                    if (savedOverMesh) "已通过附近节点转发 · 待指挥台确认" else "本机已保存 · 待同步"
+                } else if (error is OpsException && error.status == 409) {
+                    when (val resolution = RnsOfflineSyncReconciler.classify409(entry, error.conflictPayload, errorMessage(error))) {
+                        is Rns409Resolution.AlreadyAchieved -> {
+                            fieldOffline.complete(entry)
+                            "服务器已更新状态（版本 ${resolution.currentVersion}）"
+                        }
+                        is Rns409Resolution.VersionDrift -> {
+                            fieldOffline.conflict(entry, resolution.detail, error.conflictPayload?.toString().orEmpty())
+                            "提交待核对"
+                        }
+                    }
                 } else {
                     fieldOffline.conflict(entry, errorMessage(error))
                     "提交待核对"
@@ -4964,14 +5131,16 @@ class MainActivity : Activity() {
 
     private fun flushFieldQueue(active: OpsClient, event: String) {
         if (!active.bound || fieldSync?.isActive == true || !visible) return
-        val entries = queuedField.filter { it.event == event && it.conflict.isBlank() && it.belongsTo(active) }
+        val entries = RnsOfflineSyncReconciler.drainOrder(
+            queuedField.filter { it.event == event && it.conflict.isBlank() && it.belongsTo(active) },
+        )
         if (entries.isEmpty()) return
         fieldSync = scope.launch {
             var changed = false
             for (entry in entries) {
                 if (active !== client || event != eventId) break
                 try {
-                    shareAssistance(active, entry)
+                    shareQueuedOverRns(active, entry)
                     val result = deliverQueued(active, entry)
                     if (active === client && event == eventId) applyQueued(entry, result)
                     else fieldOffline.complete(entry)
@@ -4980,7 +5149,18 @@ class MainActivity : Activity() {
                     throw error
                 } catch (error: Exception) {
                     if (retryable(error) || error is OpsException && error.status == 401) break
-                    fieldOffline.conflict(entry, errorMessage(error))
+                    if (error is OpsException && error.status == 409) {
+                        when (val resolution = RnsOfflineSyncReconciler.classify409(entry, error.conflictPayload, errorMessage(error))) {
+                            is Rns409Resolution.AlreadyAchieved -> fieldOffline.complete(entry)
+                            is Rns409Resolution.VersionDrift -> fieldOffline.conflict(
+                                entry,
+                                resolution.detail,
+                                error.conflictPayload?.toString().orEmpty(),
+                            )
+                        }
+                    } else {
+                        fieldOffline.conflict(entry, errorMessage(error))
+                    }
                     changed = true
                 }
             }

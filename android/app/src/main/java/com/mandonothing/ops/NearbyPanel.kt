@@ -117,20 +117,22 @@ internal class NearbyPanel(
     override fun startHold(feedback: TextView) {
         val active = activeScope ?: return
         val session = NearbyService.session.value?.takeIf { NearbyService.activeScope == active.nearbyScopeKey }
-        if (session == null) {
+        if (session == null && !gateway.isSessionReady(active)) {
             feedback.text = gateway.unavailableReason()
             return
         }
-        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
-            else Manifest.permission.ACCESS_FINE_LOCATION
-        if (activity.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) &&
-            activity.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
-            activity.requestPermissions(arrayOf(permission), RADIO_PERMISSION)
-            return
-        }
-        if (!session.voiceEnabled) {
-            feedback.text = "当前频道语音未启用，可发送附近文字"
-            return
+        if (session != null) {
+            val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
+                else Manifest.permission.ACCESS_FINE_LOCATION
+            if (activity.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) &&
+                activity.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+                activity.requestPermissions(arrayOf(permission), RADIO_PERMISSION)
+                return
+            }
+            if (!session.voiceEnabled) {
+                feedback.text = "当前频道语音未启用，可发送附近文字"
+                return
+            }
         }
         if (hasMicrophone()) beginVoice(active, feedback)
         else requestMicrophone { feedback.text = "已允许麦克风，按住说话，松开发送" }

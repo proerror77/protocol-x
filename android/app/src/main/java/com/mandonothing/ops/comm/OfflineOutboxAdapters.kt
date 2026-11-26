@@ -35,8 +35,22 @@ internal class FieldOfflineQueueAdapter(
     ): FieldOfflineStore.Queued = store.stage(client, event, ref, version, action, parameters)
 
     fun pending(client: OpsClient): List<FieldOfflineStore.Queued> = store.pending(client)
-    fun conflict(entry: FieldOfflineStore.Queued, message: String) = store.conflict(entry, message)
+    fun updateDeliveryState(entry: FieldOfflineStore.Queued, state: String): FieldOfflineStore.Queued =
+        store.updateDeliveryState(entry, state)
+
+    fun conflict(entry: FieldOfflineStore.Queued, message: String, conflictDetailJson: String = "") =
+        store.conflict(entry, message, conflictDetailJson)
+
     fun complete(entry: FieldOfflineStore.Queued) = store.complete(entry)
+    fun saveCheckpoints(
+        client: OpsClient,
+        event: String,
+        workspaceRevision: String? = null,
+        channelCursor: String? = null,
+        flightNoticeSeq: Long? = null,
+    ) = store.saveCheckpoints(client, event, workspaceRevision, channelCursor, flightNoticeSeq)
+
+    fun checkpoints(client: OpsClient, event: String): JSONObject? = store.checkpoints(client, event)
     fun clearCache(client: OpsClient) = store.clearCache(client)
 }
 
