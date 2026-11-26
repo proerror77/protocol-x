@@ -141,6 +141,20 @@ def feed_version(conn, scope, kind):
     return row["version"] if row else 0
 
 
+def bump_feed(conn, scope, kind="ops"):
+    if not scope:
+        return 0
+    if conn.postgres:
+        row = conn.execute("SELECT ops_bump_feed(?,?) AS v", (scope, kind)).fetchone()
+        return row["v"] if row and row["v"] is not None else 0
+    conn.execute(
+        "INSERT INTO channel_feed_versions VALUES (?,?,1) "
+        "ON CONFLICT(scope,kind) DO UPDATE SET version=channel_feed_versions.version+1",
+        (scope, kind),
+    )
+    return feed_version(conn, scope, kind)
+
+
 class ChannelWakeups:
     def __init__(self, paths):
         self.paths = {str(path) for path in paths if path and is_postgres(path)}

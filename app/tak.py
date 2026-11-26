@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from urllib.parse import quote, urlsplit
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 from xml.etree.ElementTree import Element, ParseError, SubElement, fromstring, tostring
 
-from fastapi import Depends, HTTPException, Response
+from fastapi import Depends, HTTPException, Request, Response
 from pydantic import UUID4, Field
 
 from .models import StrictModel
@@ -26,6 +26,8 @@ NO_POSITION = 9999999
 CHAT_TYPE = "b-t-f"
 MARKER_TYPE = "b-m-p-s-m"
 PTT_TYPE = "t-x-ops-ptt"
+PEER_PLI_TYPE = "a-f-G-U-C"
+TASK_MARKER_TYPE = "b-m-p-s-m"
 ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,80}\Z")
 INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
@@ -102,11 +104,12 @@ def cot_time(value):
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def cot_event(uid, event_type, timestamp, latitude=NO_POSITION, longitude=NO_POSITION):
+def cot_event(uid, event_type, timestamp, latitude=NO_POSITION, longitude=NO_POSITION,
+              *, how="h-g-i-g-o", stale_minutes=30):
     stamp = cot_time(timestamp)
-    event = Element("event", {"version": "2.0", "uid": uid, "type": event_type, "how": "h-g-i-g-o",
+    event = Element("event", {"version": "2.0", "uid": uid, "type": event_type, "how": how,
                               "time": stamp, "start": stamp,
-                              "stale": cot_time(timestamp + timedelta(minutes=30))})
+                              "stale": cot_time(timestamp + timedelta(minutes=stale_minutes))})
     SubElement(event, "point", {"lat": str(latitude), "lon": str(longitude),
                                 "hae": str(NO_POSITION), "ce": str(NO_POSITION), "le": str(NO_POSITION)})
     return event
@@ -119,6 +122,30 @@ def cot_payload(settings, uid, kind, content, timestamp):
         SubElement(SubElement(detail, "marti"), "dest", {"uid": settings.recipient_uid})
         SubElement(detail, "ops_ptt", content["event"])
         SubElement(detail, "remarks").text = content["text"]
+        return event
+
+    if kind == "peer_pli":
+        event = cot_event(
+            uid, content.get("cot_type") or PEER_PLI_TYPE, timestamp,
+            content["latitude"], content["longitude"], how="m-g", stale_minutes=15,
+        )
+        detail = SubElement(event, "detail")
+        SubElement(SubElement(detail, "marti"), "dest", {"uid": settings.recipient_uid})
+        SubElement(detail, "contact", {"callsign": content["callsign"]})
+        if content.get("remarks"):
+            SubElement(detail, "remarks").text = content["remarks"]
+        return event
+
+    if kind == "task_marker":
+        event = cot_event(
+            uid, content.get("cot_type") or TASK_MARKER_TYPE, timestamp,
+            content["latitude"], content["longitude"],
+        )
+        detail = SubElement(event, "detail")
+        SubElement(SubElement(detail, "marti"), "dest", {"uid": settings.recipient_uid})
+        SubElement(detail, "contact", {"callsign": content["title"]})
+        if content.get("remarks"):
+            SubElement(detail, "remarks").text = content["remarks"]
         return event
 
     is_report = kind == "report"
@@ -187,6 +214,10 @@ class TakTransport:
             actual_contact, expected_contact = record.find("detail/contact"), expected.find("detail/contact")
             if actual_contact is None or actual_contact.get("callsign") != expected_contact.get("callsign"):
                 raise ValueError("OpenTAKServer returned a different point")
+        if expected.get("type") == PEER_PLI_TYPE:
+            actual_contact, expected_contact = record.find("detail/contact"), expected.find("detail/contact")
+            if actual_contact is None or actual_contact.get("callsign") != expected_contact.get("callsign"):
+                raise ValueError("OpenTAKServer returned a different peer PLI")
         return True
 
     def deliver(self, event):
@@ -249,6 +280,10 @@ def record_delivery(store, transport, event_id, kind, operation_id, content, act
             uid = uuid4().hex
             if kind == "report":
                 uid = f"GeoChat.{config.sender_uid}.{config.recipient_uid}.{uid}"
+            elif kind == "peer_pli":
+                uid = f"OpsPeer-{event_id}-{operation_id}"
+            elif kind == "task_marker":
+                uid = f"OpsTask-{event_id}-{operation_id}"
             else:
                 uid = ("OpsPtt-" if kind == "ptt" else "OpsPoint-") + uid
             created_at = cot_time(datetime.now(timezone.utc))
@@ -286,7 +321,127 @@ def record_delivery(store, transport, event_id, kind, operation_id, content, act
                                           WHERE event_id=? AND kind=? AND operation_id=?""", key).fetchone())
 
 
+def install_tak_inbound_schema(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tak_inbound_events (
+            event_id TEXT NOT NULL,
+            cot_uid TEXT NOT NULL,
+            cot_time TEXT NOT NULL,
+            envelope_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            data TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            PRIMARY KEY(event_id, cot_uid, cot_time)
+        )
+    """)
+
+
+def is_echo_cot(conn, sender_uid: str | None, cot_uid: str) -> str | None:
+    if sender_uid and (cot_uid == sender_uid or cot_uid.startswith(f"GeoChat.{sender_uid}.")):
+        return "self_originated"
+    if cot_uid.startswith(("OpsPoint-", "OpsPtt-", "OpsPeer-", "OpsTask-")):
+        return "ops_prefix_echo"
+    if conn.execute("SELECT 1 FROM tak_deliveries WHERE cot_uid=?", (cot_uid,)).fetchone():
+        return "known_outbound_uid"
+    return None
+
+
+def ingest_inbound_cot(store, event_id: str, xml_bytes: bytes, *, sender_uid: str | None = None):
+    """Parse an inbound ATAK CoT event, suppress echoes, and store deterministic evidence."""
+    if len(xml_bytes) > 16_384 or b"<!DOCTYPE" in xml_bytes.upper():
+        raise HTTPException(422, "无效的 CoT XML")
+    try:
+        record = fromstring(xml_bytes)
+    except ParseError as error:
+        raise HTTPException(422, "CoT XML 解析失败") from error
+    if record.tag != "event":
+        raise HTTPException(422, "CoT 根节点必须为 event")
+    cot_uid = (record.get("uid") or "").strip()
+    cot_type = (record.get("type") or "").strip()
+    cot_time_str = (record.get("time") or record.get("start") or "").strip()
+    if not cot_uid or not cot_type or not cot_time_str:
+        raise HTTPException(422, "CoT 缺少 uid、type 或 time")
+
+    point = record.find("point")
+    if point is None:
+        raise HTTPException(422, "CoT 缺少 point 节点")
+    try:
+        lat = float(point.get("lat", ""))
+        lon = float(point.get("lon", ""))
+    except ValueError as error:
+        raise HTTPException(422, "CoT 坐标无效") from error
+
+    remarks = (record.findtext("detail/remarks") or "").strip()
+    contact = record.find("detail/contact")
+    callsign = (contact.get("callsign") if contact is not None else "") or ""
+    if INVALID_XML.search(remarks) or INVALID_XML.search(callsign):
+        raise HTTPException(422, "CoT 文本包含非法字符")
+
+    envelope_id = str(uuid5(NAMESPACE_URL, f"tak:{cot_uid}:{cot_time_str}"))
+    now_iso = cot_time(datetime.now(timezone.utc))
+    with store.connect(write=True) as conn:
+        install_tak_inbound_schema(conn)
+        echo_reason = is_echo_cot(conn, sender_uid, cot_uid)
+        if echo_reason:
+            return {"status": "ignored", "reason": echo_reason, "cot_uid": cot_uid}
+
+        existing = conn.execute(
+            "SELECT envelope_id, kind, data, received_at FROM tak_inbound_events WHERE event_id=? AND cot_uid=? AND cot_time=?",
+            (event_id, cot_uid, cot_time_str),
+        ).fetchone()
+        if existing:
+            return {
+                "status": "deduplicated",
+                "envelope_id": existing["envelope_id"],
+                "cot_uid": cot_uid,
+                "kind": existing["kind"],
+                "data": json.loads(existing["data"]),
+                "received_at": existing["received_at"],
+            }
+
+        is_chat = cot_type == CHAT_TYPE
+        kind = "message" if is_chat else "location"
+        payload = {
+            "cot_uid": cot_uid,
+            "cot_type": cot_type,
+            "cot_time": cot_time_str,
+            "stale": record.get("stale"),
+            "callsign": callsign,
+            "remarks": remarks,
+            "latitude": lat,
+            "longitude": lon,
+        }
+        conn.execute(
+            "INSERT INTO tak_inbound_events VALUES (?,?,?,?,?,?,?)",
+            (event_id, cot_uid, cot_time_str, envelope_id, kind, dump(payload), now_iso),
+        )
+        if is_chat and remarks:
+            msg_id = "tak-" + hashlib.sha256(f"{event_id}:{cot_uid}:{cot_time_str}".encode()).hexdigest()[:32]
+            message = {
+                "id": msg_id,
+                "author": f"tak:{callsign or cot_uid}",
+                "speaker": callsign or cot_uid,
+                "text": remarks[:4000],
+                "created_at": now_iso,
+                "source": "tak_cot",
+                "subject_ref": None,
+                "cot_uid": cot_uid,
+            }
+            conn.execute("INSERT OR IGNORE INTO messages(id,event_id,data) VALUES (?,?,?)",
+                         (msg_id, event_id, dump(message)))
+        return {
+            "status": "ingested",
+            "envelope_id": envelope_id,
+            "cot_uid": cot_uid,
+            "kind": kind,
+            "data": payload,
+            "received_at": now_iso,
+        }
+
+
 def register_tak(app, identity, store, settings):
+    with store.connect(write=True) as conn:
+        install_tak_inbound_schema(conn)
     transport = TakTransport(settings) if settings else None
 
     def require_tak(event_id, user):
@@ -331,6 +486,23 @@ def register_tak(app, identity, store, settings):
             raise HTTPException(422, "请输入有效的点位名称")
         content = {"title": title, "latitude": body.latitude, "longitude": body.longitude}
         return share(response, event_id, "point", str(body.request_id), content, user)
+
+    @app.post("/api/events/{event_id}/tak/inbound")
+    async def receive_inbound_cot(event_id: str, request: Request, user=Depends(identity)):
+        require_tak(event_id, user)
+        xml_bytes = await request.body()
+        return ingest_inbound_cot(store, event_id, xml_bytes, sender_uid=settings.sender_uid)
+
+    @app.get("/api/events/{event_id}/tak/deliveries")
+    def list_deliveries(event_id: str, user=Depends(identity)):
+        require_tak(event_id, user)
+        with store.connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, kind, operation_id, cot_uid, status, recipient_uid, actor, created_at, received_at "
+                "FROM tak_deliveries WHERE event_id=? ORDER BY created_at DESC LIMIT 100",
+                (event_id,),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows]}
 
     return transport
 

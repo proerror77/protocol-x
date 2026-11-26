@@ -47,6 +47,9 @@
         <service android:name=".NearbyService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <service android:name=".comm.rns.RnsRuntimeService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice|dataSync" />
         <service android:name=".ArrivalWatchService" android:exported="false"
             android:foregroundServiceType="dataSync" />
         <activity
