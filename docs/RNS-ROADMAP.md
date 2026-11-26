@@ -70,23 +70,23 @@ Audit of `README.md`, `CONTEXT.md`, `docs/`, `app/`, and `android/app/src/main/j
 
 ---
 
-## 4. RNS-01 .. RNS-13 PR Breakdown & GitHub Tracking
+## 4. RNS-01 .. RNS-13 PR Breakdown & Implementation Status (`rns/integration` @ `219f499`)
 
-| PR | Title | GitHub Issue | Stage | Track | Dependencies | Estimate |
-| --- | --- | --- | --- | --- | --- | --- |
-| **RNS-01** | Rust Core / UniFFI | [#9](https://github.com/proerror77/protocol-x/issues/9) | 01–02 | Track A | — | 2–3 d |
-| **RNS-02** | Communication Interface | [#10](https://github.com/proerror77/protocol-x/issues/10) | 02 | Track A + B | [Epic #8](https://github.com/proerror77/protocol-x/issues/8), `RNS-TOC-CONTRACT.md` | 1.5–2 d |
-| **RNS-03** | RNS Runtime / LXMF | [#11](https://github.com/proerror77/protocol-x/issues/11) | 03 | Track A | `#9`, `#10` | 2–4 d |
-| **RNS-04** | Wi-Fi Aware Adapter | [#12](https://github.com/proerror77/protocol-x/issues/12) | 04 | Track A | `#10`, `#11` | 2–3 d |
-| **RNS-05** | Private Network / Identity | [#13](https://github.com/proerror77/protocol-x/issues/13) | 04 | Track A + B | `#11`, `#12` | 1.5–2.5 d |
-| **RNS-06** | 多跳路由 (Multi-hop Routing) | [#14](https://github.com/proerror77/protocol-x/issues/14) | 05 | Track A | `#11`, `#12`, `#13` | 2–4 d |
-| **RNS-07** | 消息与附件迁移 (Message & Attachment Migration) | [#15](https://github.com/proerror77/protocol-x/issues/15) | 06 | Track A | `#10`, `#11`, `#14` | 2–3 d |
-| **RNS-08** | Network Manager 自动切换 (Auto Failover) | [#16](https://github.com/proerror77/protocol-x/issues/16) | 06 | Track A | `#10`, `#12`, `#14`, `#15` | 1.5–2.5 d |
-| **RNS-09** | Offline Task Sync | [#17](https://github.com/proerror77/protocol-x/issues/17) | 07 | Track B | `#10`, `#14`, `#15`, `#16` | 2–3.5 d |
-| **RNS-10** | 实时 PTT 多跳适配 (Real-time PTT Multi-hop) | [#18](https://github.com/proerror77/protocol-x/issues/18) | 07 | Track A | `#10`, `#12`, `#14`, `#16` | 2–4 d |
-| **RNS-11** | TOC / TAK Gateway | [#19](https://github.com/proerror77/protocol-x/issues/19) | 08 | Track B | `#11`, `#13`, `#17`, `#18` | 1.5–3 d |
-| **RNS-12** | 性能、安全与稳定性测试 (Perf, Security & Stability QA) | [#20](https://github.com/proerror77/protocol-x/issues/20) | 08–09 | Track A + B | `#14`–`#19` | 2–3 d |
-| **RNS-13** | 淘汰自研 Mesh 重复代码 (Retire Custom Mesh Duplicates) | [#21](https://github.com/proerror77/protocol-x/issues/21) | 09 | Track A | `#20` (**Hard Gate**) | 0.5–1 d |
+| PR | Title | GitHub Issue | Stage | Track | Dependencies | Estimate | Current Status (`rns/integration` `219f499`) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **RNS-01** | Rust Core / UniFFI | [#9](https://github.com/proerror77/protocol-x/issues/9) | 01–02 | Track A | — | 2–3 d | **Implemented & Auto-QA Verified** (`personal-rns` `0.3.7` + `uniffi` `0.33.0`; `cargo check` Android targets exit `0`; NDK `.so` sysroot link pending) |
+| **RNS-02** | Communication Interface | [#10](https://github.com/proerror77/protocol-x/issues/10) | 02 | Track A + B | [Epic #8](https://github.com/proerror77/protocol-x/issues/8), `RNS-TOC-CONTRACT.md` | 1.5–2 d | **Implemented & Auto-QA Verified** (`com.mandonothing.ops.comm.*` adapters & `DefaultCommGateway`) |
+| **RNS-03** | RNS Runtime / LXMF | [#11](https://github.com/proerror77/protocol-x/issues/11) | 03 | Track A | `#9`, `#10` | 2–4 d | **Implemented & Auto-QA Verified** (`RnsRuntimeService`, `RnsLocalStore`, Rust LXMF + Python `lxmf==1.3.1` interop; NDK `.so` bundling pending) |
+| **RNS-04** | Wi-Fi Aware Adapter | [#12](https://github.com/proerror77/protocol-x/issues/12) | 04 | Track A | `#10`, `#11` | 2–3 d | **Implemented & Auto-QA Verified** (`RnsWifiAwareAdapter`, `RnsBleL2capAdapter`, `PeerCapacityManager`; physical RF pending) |
+| **RNS-05** | Private Network / Identity | [#13](https://github.com/proerror77/protocol-x/issues/13) | 04 | Track A + B | `#11`, `#12` | 1.5–2.5 d | **Implemented & Auto-QA Verified** (Rust `ifac.rs`, `RnsIfacSecurityPolicy`, `app/field_nearby.py` IFAC/CRL) |
+| **RNS-06** | 多跳路由 (Multi-hop Routing) | [#14](https://github.com/proerror77/protocol-x/issues/14) | 05 | Track A | `#11`, `#12`, `#13` | 2–4 d | **Implemented & Auto-QA Verified** (1–5+ hop Rust/Python relay + `RnsTopologyDiagnostics`; physical RF chain pending) |
+| **RNS-07** | 消息与附件迁移 (Message & Attachment Migration) | [#15](https://github.com/proerror77/protocol-x/issues/15) | 06 | Track A | `#10`, `#11`, `#14` | 2–3 d | **Implemented & Auto-QA Verified** (`RnsResourceTransferManager`, `RnsEnvelopeCodec`, HTTP/LXMF dedup) |
+| **RNS-08** | Network Manager 自动切换 (Auto Failover) | [#16](https://github.com/proerror77/protocol-x/issues/16) | 06 | Track A | `#10`, `#12`, `#14`, `#15` | 1.5–2.5 d | **Implemented & Auto-QA Verified** (`RnsNetworkManager` `<5s` hysteresis failover in JVM tests; physical RF handoff pending) |
+| **RNS-09** | Offline Task Sync | [#17](https://github.com/proerror77/protocol-x/issues/17) | 07 | Track B | `#10`, `#14`, `#15`, `#16` | 2–3.5 d | **Implemented & Auto-QA Verified** (`POST /api/rns/v1/envelopes`, `FieldOfflineStore`, `RnsOfflineSyncReconciler`) |
+| **RNS-10** | 实时 PTT 多跳适配 (Real-time PTT Multi-hop) | [#18](https://github.com/proerror77/protocol-x/issues/18) | 07 | Track A | `#10`, `#12`, `#14`, `#16` | 2–4 d | **Implemented & Auto-QA Verified** (`src/ptt.rs`, `RnsPttSessionTransport`, `RnsPttHandoffCoordinator`; real audio RF latency pending) |
+| **RNS-11** | TOC / TAK Gateway | [#19](https://github.com/proerror77/protocol-x/issues/19) | 08 | Track B | `#11`, `#13`, `#17`, `#18` | 1.5–3 d | **Implemented & Auto-QA Verified** (`app/rns_gateway.py`, `app/tak.py` CoT bridge + echo suppression) |
+| **RNS-12** | 性能、安全与稳定性测试 (Perf, Security & Stability QA) | [#20](https://github.com/proerror77/protocol-x/issues/20) | 08–09 | Track A + B | `#14`–`#19` | 2–3 d | **OPEN — Auto/Loopback QA PASS; Physical Gate Pending** (see [docs/RNS-12-QA-REPORT.md](RNS-12-QA-REPORT.md)) |
+| **RNS-13** | 淘汰自研 Mesh 重复代码 (Retire Custom Mesh Duplicates) | [#21](https://github.com/proerror77/protocol-x/issues/21) | 09 | Track A | `#20` (**Hard Gate**) | 0.5–1 d | **OPEN — BLOCKED** (Legacy Nearby Mesh preserved behind `CommGateway` until `RNS-12` physical field gate clears) |
 
 ---
 
@@ -138,6 +138,8 @@ Track B proceeds concurrently against the frozen `CommEnvelope` and `Action`/`Re
 ---
 
 ## 7. Mandatory Decision Gate Before Retiring Custom Mesh (`RNS-13`)
+
+> **Current Gate Status (`rns/integration` @ `219f499`):** **NOT CLEARED — `RNS-13` (`#21`) REMAINS BLOCKED.** Automated/loopback Rust, Python, and Android suites pass (see [docs/RNS-12-QA-REPORT.md](RNS-12-QA-REPORT.md)), while Android NDK `.so` bundling (`libprotocolx_rns.so`), 50–100 m Wi-Fi Aware LOS range, 3–5 physical Android multi-hop RF testing, hardware audio PTT latency, and the 24 h device endurance soak remain pending.
 
 Existing custom mesh code (`NearbyRadios`, `NearbyMessages`, `NearbyLiveVoice`, legacy `NearbyPrivate` transport loops) provides current v0.27.3 field capability and **must remain operational behind `RNS-02` adapters** until **all four gate criteria** are verified in `RNS-12`:
 
