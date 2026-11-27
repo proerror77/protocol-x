@@ -137,7 +137,7 @@ class RnsPttTransportTest {
     fun adpcmCodecCompressesFourToOneWithSpeechPreservation() {
         val pcm = sineWaveFrame()
         val encoded = RnsPttAdpcmCodec.encode(pcm)
-        assertEquals(324, encoded.size) // 4B header + 320B nibbles vs 1280B PCM16
+        assertEquals(164, encoded.size) // 4B header + 160B nibbles vs 640B PCM16; fits inside 383B RNS SINGLE MDU
 
         val decoded = RnsPttAdpcmCodec.decode(encoded, pcm.size)
         assertEquals(pcm.size, decoded.size)
@@ -228,19 +228,19 @@ class RnsPttTransportTest {
         transportA.connect()
         transportB.connect()
 
-        // Press PTT on A and stream 8 frames (320 ms > 250ms archive threshold), seq=2 dropped.
+        // Press PTT on A and stream 14 frames (280 ms > 250ms archive threshold), seq=2 dropped.
         assertTrue(transportA.startPress())
-        repeat(8) { idx ->
-            clockA.set(10_000L + idx * 40L)
-            clockB.set(10_180L + idx * 40L)
+        repeat(14) { idx ->
+            clockA.set(10_000L + idx * 20L)
+            clockB.set(10_180L + idx * 20L)
             transportA.pushLocalPcmFrame(sineWaveFrame())
         }
         transportA.stopPress(cancel = false)
 
-        // Verify remote B played all 8 frames (7 decoded + 1 concealed for dropped seq=2) under 800ms latency.
-        assertEquals(8, audioB.playedFrames.size)
+        // Verify remote B played all 14 frames (13 decoded + 1 concealed for dropped seq=2) under 800ms latency.
+        assertEquals(14, audioB.playedFrames.size)
         val statsB = transportB.playoutStats()
-        assertEquals(7L, statsB.framesPlayed)
+        assertEquals(13L, statsB.framesPlayed)
         assertEquals(1L, statsB.framesConcealed)
         assertTrue("Expected 3-hop latency < 800ms, got ${statsB.maxLatencyMs}", statsB.maxLatencyMs < 800L)
 

@@ -112,14 +112,15 @@ internal interface RnsPttAudioIo : Closeable {
 
 /**
  * 4-bit IMA ADPCM codec for 16 kHz mono PCM PTT bursts.
- * Compresses a 40 ms 16 kHz frame (640 samples = 1,280 B PCM16) into a 324-byte wire payload
- * (4-byte predictor/step header + 320 B nibbles) for sub-500ms 1-hop / sub-800ms 3-hop delivery.
+ * Compresses a 20 ms 16 kHz frame (320 samples = 640 B PCM16) into a 164-byte wire payload
+ * (4-byte predictor/step header + 160 B nibbles) so PXPT1 + MsgPack fits safely within RNS's
+ * 383-byte SINGLE encrypted MDU for sub-500ms 1-hop / sub-800ms 3-hop delivery.
  */
 internal object RnsPttAdpcmCodec {
     const val CODEC_ID = "adpcm-ima-16k"
     const val SAMPLE_RATE_HZ = 16_000
-    const val FRAME_DURATION_MS = 40
-    const val FRAME_SAMPLES = SAMPLE_RATE_HZ * FRAME_DURATION_MS / 1_000 // 640 samples
+    const val FRAME_DURATION_MS = 20
+    const val FRAME_SAMPLES = SAMPLE_RATE_HZ * FRAME_DURATION_MS / 1_000 // 320 samples
 
     private val INDEX_TABLE = intArrayOf(-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8)
     private val STEP_TABLE = intArrayOf(
