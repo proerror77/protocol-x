@@ -13,6 +13,16 @@ android {
         targetSdk = 35
         versionCode = 47
         versionName = "0.27.3"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        debug {
+            (project.findProperty("opsAppIdSuffix") as String?)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { applicationIdSuffix = it }
+        }
     }
 
     compileOptions {
@@ -42,4 +52,8 @@ dependencies {
     testImplementation("net.java.dev.jna:jna:5.15.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testImplementation("org.json:json:20240303")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }

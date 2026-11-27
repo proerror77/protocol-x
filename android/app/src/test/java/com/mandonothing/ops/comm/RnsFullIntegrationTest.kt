@@ -295,11 +295,15 @@ class RnsFullIntegrationTest {
             )
             rnsPtt.connect()
             assertTrue(rnsPtt.startPress())
-            repeat(8) {
-                rnsPtt.pushLocalPcmFrame(ShortArray(640) { idx -> ((idx * 31) % 3000).toShort() })
+            repeat(14) {
+                rnsPtt.pushLocalPcmFrame(
+                    ShortArray(com.mandonothing.ops.comm.ptt.RnsPttAdpcmCodec.FRAME_SAMPLES) { idx ->
+                        ((idx * 31) % 3000).toShort()
+                    },
+                )
             }
             rnsPtt.stopPress(cancel = false)
-            assertEquals(9, engine.sentPttFrames.size) // 8 audio frames + 1 endOfBurst frame
+            assertEquals(15, engine.sentPttFrames.size) // 14 audio frames + 1 endOfBurst frame
             assertEquals(1, clips.size)
 
             rnsPtt.close()
