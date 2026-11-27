@@ -352,19 +352,20 @@ class S21RealRnsDeviceTest {
             assertFalse(status.lxmfDestinationHashHex.isBlank())
             assertFalse(engine.pttDestinationHashHex().isBlank())
 
+            // Wait for S21 to hear Python's announces FIRST so peer_pubkeys caches Python's Ed25519
+            // public key before S21 announces and Python replies with signed LXMF messages.
             waitUntil(
                 timeoutMs = 15_000L,
                 failureMessage = "S21 did not hear Mac Python RNS announces for $expectedPyLxmf and $expectedPyPtt",
-                onTick = {
-                    engine.announce("s21-android-node".toByteArray(Charsets.UTF_8))
-                    engine.announceLxmf("s21-android-node")
-                    engine.announcePtt()
-                },
-                tickIntervalMs = 250L,
+                tickIntervalMs = 100L,
             ) {
                 val known = engine.activeNode()?.knownDestinations().orEmpty()
                 expectedPyLxmf in known && expectedPyPtt in known
             }
+            Thread.sleep(250L)
+            engine.announce("s21-android-node".toByteArray(Charsets.UTF_8))
+            engine.announceLxmf("s21-android-node")
+            engine.announcePtt()
 
             // Verify IFAC isolation: rogue peer on wrongPort must NEVER be known
             val knownSet = engine.activeNode()!!.knownDestinations()
@@ -445,10 +446,7 @@ class S21RealRnsDeviceTest {
 
             // 4. Verify S21 receives Opportunistic LXMF, 5KB Direct Resource LXMF, PTT Floor, and PTT Frame from Python
             val expectedPyRes = ByteArray(5120) { i -> (i % 251).toByte() }
-            waitUntil(
-                timeoutMs = 20_000L,
-                failureMessage = "Timed out waiting for Python LXMF + Resource + PTT replies on S21 (events=${events.size})",
-            ) {
+            fun checkInboundState(): List<String> {
                 val gotOpp = events.any {
                     it is RnsCoreEvent.LxmfReceived &&
                         it.title == "OppPyS21" &&
@@ -473,8 +471,31 @@ class S21RealRnsDeviceTest {
                         it.codec == RnsPttAdpcmCodec.CODEC_ID &&
                         it.audioBytes.size == 164
                 }
-                gotOpp && gotRes && gotPttFloor && gotPttFrame
+                return buildList {
+                    if (!gotOpp) add("gotOpp=false")
+                    if (!gotRes) add("gotRes=false")
+                    if (!gotPttFloor) add("gotPttFloor=false")
+                    if (!gotPttFrame) add("gotPttFrame=false")
+                }
             }
+            val waitDeadline = System.currentTimeMillis() + 25_000L
+            while (System.currentTimeMillis() < waitDeadline && checkInboundState().isNotEmpty()) {
+                Thread.sleep(100L)
+            }
+            val missing = checkInboundState()
+            val detail = events.map { ev ->
+                when (ev) {
+                    is RnsCoreEvent.LxmfReceived ->
+                        "Lxmf(title=${ev.title},sig=${ev.signatureValid},att=${ev.attachmentBytes?.size ?: 0})"
+                    is RnsCoreEvent.PttFloorEvent -> "PttFloor(${ev.action})"
+                    is RnsCoreEvent.PttFrameReceived -> "PttFrame(len=${ev.audioBytes.size})"
+                    else -> ev::class.simpleName.orEmpty()
+                }
+            }
+            assertTrue(
+                "Timed out waiting for Python replies on S21: missing=$missing, totalEvents=${events.size}, detail=$detail",
+                missing.isEmpty(),
+            )
 
             // Signal Python peer that S21 verified all inbound payloads so Python exits cleanly
             val ackOutcome = engine.sendLxmf(

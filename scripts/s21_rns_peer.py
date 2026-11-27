@@ -315,7 +315,7 @@ def run_primary(args: argparse.Namespace) -> int:
         last_announce = 0.0
         while time.monotonic() < deadline:
             now = time.monotonic()
-            if now - last_announce >= 0.4:
+            if now - last_announce >= 0.25:
                 primary_dest.announce(b"py-s21-primary")
                 router.announce(lxmf_dest.hash)
                 ptt_dest.announce(b"")

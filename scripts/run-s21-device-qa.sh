@@ -63,6 +63,7 @@ print("ROGUE_PRIMARY_DEST=" + d["rogue_primary_dest_hex"])
 adb -s "$DEVICE_SERIAL" reverse "tcp:${PORT}" "tcp:${PORT}"
 adb -s "$DEVICE_SERIAL" reverse "tcp:${WRONG_PORT}" "tcp:${WRONG_PORT}"
 
+set +e
 adb -s "$DEVICE_SERIAL" shell am instrument -w \
   -e class com.mandonothing.ops.comm.rns.S21RealRnsDeviceTest \
   -e rnsPeerHost 127.0.0.1 \
@@ -75,9 +76,22 @@ adb -s "$DEVICE_SERIAL" shell am instrument -w \
   -e rogueLxmfDest "$ROGUE_LXMF_DEST" \
   -e roguePrimaryDest "$ROGUE_PRIMARY_DEST" \
   "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner"
+INST_EXIT=$?
+
+if [[ "$INST_EXIT" -ne 0 ]]; then
+  echo "am instrument failed ($INST_EXIT); terminating Python peer..."
+  kill "$PEER_PID" 2>/dev/null || true
+  wait "$PEER_PID" 2>/dev/null || true
+  PEER_PID=""
+  echo "=== Python Peer Log ==="
+  cat "$PEER_LOG"
+  rm -f "$PEER_LOG"
+  exit "$INST_EXIT"
+fi
 
 wait "$PEER_PID"
 PEER_EXIT=$?
+set -e
 PEER_PID=""
 echo "=== Python Peer Log ==="
 cat "$PEER_LOG"
