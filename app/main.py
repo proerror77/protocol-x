@@ -25,6 +25,7 @@ from .field_conference import register_conferences
 from .field_tasks import register_field_tasks
 from .flights import ArrivalFeed, register_flights
 from .flight_dispatch import ENGINE
+from .foundry_bridge import FoundryBridge, FoundryBridgeSettings, register_foundry_bridge
 from .pickup_scenario import register_pickup_scenario
 from .pickup_watch import PickupWatch, register_pickup_watch
 from .pilot import PilotSettings, pilot_lifespan, register_ptt
@@ -118,7 +119,9 @@ def create_app(db_path=None):
     voice_archive = VoiceArchive(voice_path) if voice_path else None
     arrivals = ArrivalFeed()
     pickup = PickupWatch(store, arrivals, definitions)
-    reception = ArrivalDesk(store, definitions, pickup, field)
+    foundry_settings = FoundryBridgeSettings.from_env()
+    foundry_bridge = FoundryBridge(foundry_settings) if foundry_settings else None
+    reception = ArrivalDesk(store, definitions, pickup, field, foundry_bridge=foundry_bridge)
     from .bindings import candidates, project_task
 
     channel_wakeups = ChannelWakeups((store.path, voice_archive.path if voice_archive else None))
@@ -138,6 +141,7 @@ def create_app(db_path=None):
     app.state.field = field
     app.state.voice_archive = voice_archive
     app.state.channel_wakeups = channel_wakeups
+    app.state.foundry_bridge = foundry_bridge
     field.register(app, identity)
     register_field_nearby(app, field, identity)
     register_field_passkeys(app, field)
@@ -167,6 +171,14 @@ def create_app(db_path=None):
         rns_gateway = RnsGateway(rns_settings, store, rns_processor, tak_settings=tak)
         app.state.rns_gateway = rns_gateway
         register_rns_gateway(app, identity, rns_gateway)
+    register_foundry_bridge(
+        app,
+        store,
+        channel_wakeups,
+        foundry_bridge,
+        tak_transport=transport,
+        rns_gateway=rns_gateway,
+    )
     changes = WorkspaceChanges(store, field.enabled)
     changes.register(app, identity, activities)
     mode = "pilot" if settings.tokens else "local_demo"
@@ -288,8 +300,11 @@ def create_app(db_path=None):
 
     @app.post("/api/events/{event_id}/actions")
     def action(event_id: str, body: ActionInput, user=Depends(identity)):
+        active_bridge = app.state.foundry_bridge
+        if active_bridge is not None and active_bridge.settings.mode == "primary":
+            active_bridge.forward_task_action(event_id, body, user)
         with store.connect(write=True) as conn:
-            receipt, _ = execute_task_action(
+            receipt, deduplicated = execute_task_action(
                 conn,
                 event_id,
                 definitions,
@@ -299,7 +314,9 @@ def create_app(db_path=None):
                 new_id_fn=new_id,
                 enrich_conflict=False,
             )
-            return receipt
+        if active_bridge is not None and active_bridge.settings.mode == "shadow" and not deduplicated:
+            active_bridge.forward_task_action(event_id, body, user)
+        return receipt
 
     web = ROOT / "web"
     if web.is_dir():
