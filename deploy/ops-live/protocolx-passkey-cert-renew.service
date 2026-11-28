@@ -1,0 +1,6 @@
+[Unit]
+Description=Renew the Protocol X login domain certificate
+
+[Service]
+Type=oneshot
+ExecStart=/opt/golf-pilot-certbot/bin/certbot renew --cert-name protocolx.mandonothing.com --non-interactive --quiet --deploy-hook "/usr/bin/systemctl reload nginx"

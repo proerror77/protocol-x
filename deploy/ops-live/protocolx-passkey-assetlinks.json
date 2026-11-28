@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.mandonothing.ops",
+      "sha256_cert_fingerprints": [
+        "99:89:CD:C0:8A:55:01:06:B9:72:9E:92:26:4C:03:EA:12:51:D0:5F:A8:33:81:45:88:C1:FB:BC:09:22:7C:8E"
+      ]
+    }
+  }
+]
