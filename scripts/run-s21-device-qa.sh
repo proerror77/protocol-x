@@ -2,13 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEVICE_SERIAL="${S21_SERIAL:-R5CR40E11PP}"
+DEVICE_SERIAL="${ADB_SERIAL:-${S21_SERIAL:-R5CR40E11PP}}"
+APP_PACKAGE="${S21_APP_PACKAGE:-com.mandonothing.ops.rnsqa}"
 PYTHON_BIN="${PROTOCOLX_RNS_PYTHON:-/Users/proerror/Documents/toc/protocol-x-rns-01/.venv-rns-poc/bin/python}"
 PORT="${S21_RNS_PORT:-17421}"
 WRONG_PORT="${S21_RNS_WRONG_PORT:-17422}"
 IFAC_NET="${S21_IFAC_NET:-protocolx.s21.qa}"
 IFAC_PASS="${S21_IFAC_PASS:-s21-qa-secret-v1}"
-TEST_PACKAGE="${S21_TEST_PACKAGE:-com.mandonothing.ops.rnsqa.test}"
+TEST_PACKAGE="${S21_TEST_PACKAGE:-${APP_PACKAGE}.test}"
 
 PEER_LOG="$(mktemp -t s21_rns_peer.XXXXXX.log)"
 PEER_PID=""
@@ -62,6 +63,17 @@ print("ROGUE_PRIMARY_DEST=" + d["rogue_primary_dest_hex"])
 
 adb -s "$DEVICE_SERIAL" reverse "tcp:${PORT}" "tcp:${PORT}"
 adb -s "$DEVICE_SERIAL" reverse "tcp:${WRONG_PORT}" "tcp:${WRONG_PORT}"
+
+for perm in \
+  android.permission.NEARBY_WIFI_DEVICES \
+  android.permission.BLUETOOTH_SCAN \
+  android.permission.BLUETOOTH_CONNECT \
+  android.permission.BLUETOOTH_ADVERTISE \
+  android.permission.ACCESS_FINE_LOCATION \
+  android.permission.RECORD_AUDIO \
+  android.permission.POST_NOTIFICATIONS; do
+  adb -s "$DEVICE_SERIAL" shell pm grant "$APP_PACKAGE" "$perm" 2>/dev/null || true
+done
 
 set +e
 adb -s "$DEVICE_SERIAL" shell am instrument -w \

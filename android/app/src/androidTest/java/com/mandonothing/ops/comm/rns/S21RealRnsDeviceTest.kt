@@ -41,8 +41,11 @@ import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
+import org.junit.runner.Description
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
+import org.junit.runners.model.Statement
 import uniffi.protocolx_rns.bindActorDeviceToRns
 import uniffi.protocolx_rns.deriveEventIfacConfig
 import uniffi.protocolx_rns.generateIdentity
@@ -65,14 +68,24 @@ import kotlin.math.sin
 class S21RealRnsDeviceTest {
 
     @get:Rule
-    val permissionRule: GrantPermissionRule = GrantPermissionRule.grant(
-        Manifest.permission.RECORD_AUDIO,
-        Manifest.permission.NEARBY_WIFI_DEVICES,
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_ADVERTISE,
-        Manifest.permission.POST_NOTIFICATIONS,
-    )
+    val permissionRule: TestRule = TestRule { base, description ->
+        val required = arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.NEARBY_WIFI_DEVICES,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_ADVERTISE,
+            Manifest.permission.POST_NOTIFICATIONS,
+        )
+        val missing = required.filter {
+            context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) {
+            base
+        } else {
+            GrantPermissionRule.grant(*missing.toTypedArray()).apply(base, description)
+        }
+    }
 
     private val context: Context
         get() = InstrumentationRegistry.getInstrumentation().targetContext
