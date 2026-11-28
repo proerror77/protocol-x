@@ -61,7 +61,19 @@ OPS_FIELD_SMTP_USERNAME=protocolx@mandonothing.com
 OPS_FIELD_SMTP_PASSWORD=<发件端 SMTP 凭据>
 ```
 
-可用 `OPS_FIELD_SMTP_FROM` 指定邮件 From 地址，默认使用 SMTP 用户名。确保 Ops 主机能访问发件端，反向代理只采信可信来源提供的客户端地址。配置错误会阻止服务以邮箱验证模式启动。
+可用 `OPS_FIELD_SMTP_FROM` 指定邮件 From 地址，默认使用 SMTP 用户名。确保 Ops 主机能访问发件端，配置错误会阻止服务以邮箱验证模式启动。
+
+反向代理与限流配置：
+
+- **Nginx 覆盖客户端 IP 头**：`POST /api/field/email/request`（每 IP 10 分钟 60 次）与 `POST /api/field/passkeys/*/options`（每 IP 4 分钟 40 次）均按提取后的客户端 IP 限流。请在代理 Ops（`127.0.0.1:8000`）的 Nginx `location` 中显式覆盖 `X-Forwarded-For` 与 `X-Real-IP`，避免客户端伪造请求头绕过限流或被误信：
+  ```nginx
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $remote_addr;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  ```
+  若前端还经过 Cloudflare 等上游代理，需先在 Nginx 通过 `set_real_ip_from` 仅信任上游代理网段还原真实客户端地址，再覆盖上述转发头。
+- **Docker / 反向代理信任地址（`OPS_FORWARDED_ALLOW_IPS`）**：Uvicorn 默认只信任 `127.0.0.1` 的代理头。若 Ops 运行在 `deploy/ptt/compose.yaml` 等 Docker 网桥后方，容器看到的连接对端是网桥网关（如 `172.18.0.1`）而非 `127.0.0.1`，所有现场设备会落入同一个限流桶并在集体领码或注册时触发 `429`。请在 `deploy/ptt/pilot.env` 或容器环境变量中设置 `OPS_FORWARDED_ALLOW_IPS` 为可信反代 / Docker 网桥网关 IP 或网段（例如用 `docker network inspect` 确认网关后设为 `172.18.0.1`；不要在对公网直接暴露的端口上设为 `*`）。直接命令行启动 `uvicorn` 时，可对应使用 `--forwarded-allow-ips` 或 `FORWARDED_ALLOW_IPS`。
+- **Cloudflare 放行 App Links 与激活页**：在 Cloudflare 代理 `protocolx.mandonothing.com` 时，需确保 Bot Fight Mode、Super Bot Fight Mode 与 WAF 不会对 `/.well-known/assetlinks.json` 或 `/activate` 返回质询页（Challenge）或拦截响应（例如为 `http.host eq "protocolx.mandonothing.com" and (http.request.uri.path eq "/.well-known/assetlinks.json" or http.request.uri.path eq "/activate")` 配置 WAF Skip / 放行规则），使 `/.well-known/assetlinks.json` 直接返回 `200 application/json`，保障 Android App Links 与 Credential Manager 校验成功。
 
 香港服务的登录配置可先保存在仅 root 可读的 `/etc/golf-ops-pilot/passkeys.env`。在新版 App 和首批人员验证完成后，再将它加入 Ops 的生效环境并启用邮箱登记。
 

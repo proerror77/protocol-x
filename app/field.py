@@ -1,5 +1,6 @@
 """Personal sessions and activity-scoped membership for the field client."""
 import hashlib
+import ipaddress
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,20 @@ def expiry(minutes):
 
 def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def client_ip(request):
+    """Return canonical client IP from ASGI scope (populated by ProxyHeadersMiddleware when trusted)."""
+    host = request.client.host.strip() if request.client and request.client.host else ""
+    if not host:
+        return ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return str(address.ipv4_mapped)
+    return address.compressed
 
 
 def clean(value):

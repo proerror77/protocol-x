@@ -10,4 +10,4 @@ COPY web ./web
 RUN mkdir -p data && chown -R ops:ops /opt/golf-ops
 USER ops
 EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips \"${OPS_FORWARDED_ALLOW_IPS:-${FORWARDED_ALLOW_IPS:-127.0.0.1}}\""]

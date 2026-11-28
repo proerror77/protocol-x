@@ -8,6 +8,7 @@ import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from webauthn.helpers import bytes_to_base64url
 
 from app.main import create_app
@@ -243,3 +244,44 @@ def test_batch_roster_import_retries_and_permission(tmp_path, monkeypatch):
     assert client.post(url, headers=dispatcher, json=conflict).status_code == 409
     directory = ok(client.get(BASE + "/directory", headers=dispatcher))
     assert {p["callsign"] for p in directory["people"]} == {"值班调度", "OPS-1", "OPS-2"}
+
+
+def test_rate_limits_trust_configured_proxy_and_reject_spoofed_headers(tmp_path, monkeypatch):
+    configure(monkeypatch, rp=True)
+    configure_email(monkeypatch)
+    proxied = ProxyHeadersMiddleware(create_app(tmp_path / "proxy-limits.db"), trusted_hosts="172.18.0.1")
+    trusted_proxy = TestClient(proxied, client=("172.18.0.1", 50000))
+    untrusted_peer = TestClient(proxied, client=("198.51.100.99", 50000))
+
+    for index in range(60):
+        response = trusted_proxy.post("/api/field/email/request", json={"email": f"u{index}@example.test"},
+                                      headers={"X-Forwarded-For": "198.51.100.10"})
+        assert response.status_code == 202
+    assert trusted_proxy.post("/api/field/email/request", json={"email": "blocked@example.test"},
+                              headers={"X-Forwarded-For": "198.51.100.10"}).status_code == 429
+    assert trusted_proxy.post("/api/field/email/request", json={"email": "mapped@example.test"},
+                              headers={"X-Forwarded-For": "::ffff:198.51.100.10"}).status_code == 429
+    assert trusted_proxy.post("/api/field/email/request", json={"email": "appended@example.test"},
+                              headers={"X-Forwarded-For": "203.0.113.5, 198.51.100.10"}).status_code == 429
+    assert trusted_proxy.post("/api/field/email/request", json={"email": "other@example.test"},
+                              headers={"X-Forwarded-For": "198.51.100.11"}).status_code == 202
+
+    for _ in range(40):
+        assert trusted_proxy.post(PASSKEY + "/login/options",
+                                  headers={"X-Forwarded-For": "2001:0db8::1"}).status_code == 200
+    assert trusted_proxy.post(PASSKEY + "/login/options",
+                              headers={"X-Forwarded-For": "2001:db8::1"}).status_code == 429
+    assert trusted_proxy.post(PASSKEY + "/login/options",
+                              headers={"X-Forwarded-For": "2001:db8::2"}).status_code == 200
+
+    for index in range(40):
+        assert untrusted_peer.post(PASSKEY + "/login/options",
+                                   headers={"X-Forwarded-For": f"203.0.113.{index}"}).status_code == 200
+    assert untrusted_peer.post(PASSKEY + "/login/options",
+                               headers={"X-Forwarded-For": "203.0.113.250"}).status_code == 429
+
+    for index in range(60):
+        assert untrusted_peer.post("/api/field/email/request", json={"email": f"spoof{index}@example.test"},
+                                   headers={"X-Forwarded-For": f"203.0.113.{index}"}).status_code == 202
+    assert untrusted_peer.post("/api/field/email/request", json={"email": "spoof60@example.test"},
+                               headers={"X-Forwarded-For": "203.0.113.250"}).status_code == 429

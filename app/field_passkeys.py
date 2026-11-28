@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field, UUID4, field_validator
 
-from .field import InviteInput, digest, expiry, stamp
+from .field import InviteInput, client_ip, digest, expiry, stamp
 from .field_email import email_grant_person
 from .models import StrictModel
 
@@ -80,7 +80,7 @@ def register_field_passkeys(app, field):
                             "sha256_cert_fingerprints": [fingerprint]}}]
 
     def begin(conn, request, operation, challenge, options, invite_hash=None):
-        address = request.client.host if request.client else ""
+        address = client_ip(request)
         conn.execute("DELETE FROM field_passkey_ceremonies WHERE expires_at<=?", (stamp(),))
         count = conn.execute("SELECT count(*) AS n FROM field_passkey_ceremonies WHERE address=?", (address,)).fetchone()
         if count["n"] >= 40:

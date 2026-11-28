@@ -11,7 +11,7 @@ from fastapi import BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import Field, field_validator
 
-from .field import digest, expiry, normalize_email, stamp
+from .field import client_ip, digest, expiry, normalize_email, stamp
 from .models import StrictModel
 
 LOG = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def register_field_email(app, field, identity, mail):
 
     @app.post("/api/field/email/request", status_code=202)
     def request_link(body: EmailInput, request: Request, tasks: BackgroundTasks):
-        ip = request.client.host if request.client else ""
+        ip = client_ip(request)
         token = secrets.token_urlsafe(32)
         with store.connect(write=True) as conn:
             at = stamp()

@@ -49,10 +49,14 @@
             android:foregroundServiceType="connectedDevice" />
         <service android:name=".ArrivalWatchService" android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- Use singleTask + documentLaunchMode="never" so App Links (/activate) and notification
+             PendingIntents reuse the single app task instead of spawning duplicate Recents tasks;
+             startActivityForResult works normally from singleTask on minSdk 26+. -->
         <activity
             android:name=".MainActivity"
+            android:documentLaunchMode="never"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
