@@ -17,6 +17,7 @@ from .arrival_desk import ArrivalDesk, register_arrival_desk
 from .bindings import (can_read_task, event_and_definition, load_definitions, ref_of, require_task, resolve, task_rows)
 from .models import ActionInput, MessageInput, ProposalInput
 from .field import Field
+from .field_email import EnrollmentMail, register_field_email
 from .field_passkeys import register_field_passkeys
 from .field_media import register_field_media
 from .channel_attachments import register_channel_attachments
@@ -25,6 +26,7 @@ from .field_conference import register_conferences
 from .field_tasks import register_field_tasks
 from .flights import ArrivalFeed, register_flights
 from .flight_dispatch import ENGINE
+from .foundry_bridge import FoundryBridge, FoundryBridgeSettings, register_foundry_bridge
 from .pickup_scenario import register_pickup_scenario
 from .pickup_watch import PickupWatch, register_pickup_watch
 from .pilot import PilotSettings, pilot_lifespan, register_ptt
@@ -58,6 +60,8 @@ def identity(request: Request, x_demo_role: str = Header(default="dispatcher"), 
         header = request.headers.get("Authorization")
         field = request.app.state.field
         user = field.authenticate(header) or settings.authenticate(header)
+        if field.email_enrollment and "device" not in user and user["role"] == "staff":
+            raise HTTPException(401, "请使用 Passkey 登录")
         event_id = request.path_params.get("event_id")
         if event_id is not None:
             field.require_event(event_id, user)
@@ -97,7 +101,8 @@ def create_app(db_path=None):
         raise ValueError("OPS_DATABASE_URL must be a PostgreSQL URL.")
     store = Store(db_path or database_url or os.environ.get("OPS_DB_PATH", ROOT / "data" / "ops.db"), definitions)
     settings = PilotSettings.from_env()
-    field = Field(store, definitions, bool(settings.tokens))
+    enrollment_mail = EnrollmentMail.from_env()
+    field = Field(store, definitions, bool(settings.tokens), email_enrollment=enrollment_mail is not None)
     tak = TakSettings.from_env()
     activities = {event["id"] for definition in definitions.values() for event in definition["events"]}
     if settings.media and settings.media.event_id not in activities:
@@ -118,7 +123,9 @@ def create_app(db_path=None):
     voice_archive = VoiceArchive(voice_path) if voice_path else None
     arrivals = ArrivalFeed()
     pickup = PickupWatch(store, arrivals, definitions)
-    reception = ArrivalDesk(store, definitions, pickup, field)
+    foundry_settings = FoundryBridgeSettings.from_env()
+    foundry_bridge = FoundryBridge(foundry_settings) if foundry_settings else None
+    reception = ArrivalDesk(store, definitions, pickup, field, foundry_bridge=foundry_bridge)
     from .bindings import candidates, project_task
 
     channel_wakeups = ChannelWakeups((store.path, voice_archive.path if voice_archive else None))
@@ -138,9 +145,11 @@ def create_app(db_path=None):
     app.state.field = field
     app.state.voice_archive = voice_archive
     app.state.channel_wakeups = channel_wakeups
+    app.state.foundry_bridge = foundry_bridge
     field.register(app, identity)
     register_field_nearby(app, field, identity)
     register_field_passkeys(app, field)
+    register_field_email(app, field, identity, enrollment_mail)
     register_field_tasks(app, field, identity)
     register_qrf(app, store, definitions, identity)
     register_flights(app, identity, arrivals)
@@ -167,6 +176,14 @@ def create_app(db_path=None):
         rns_gateway = RnsGateway(rns_settings, store, rns_processor, tak_settings=tak)
         app.state.rns_gateway = rns_gateway
         register_rns_gateway(app, identity, rns_gateway)
+    register_foundry_bridge(
+        app,
+        store,
+        channel_wakeups,
+        foundry_bridge,
+        tak_transport=transport,
+        rns_gateway=rns_gateway,
+    )
     changes = WorkspaceChanges(store, field.enabled)
     changes.register(app, identity, activities)
     mode = "pilot" if settings.tokens else "local_demo"
@@ -182,8 +199,12 @@ def create_app(db_path=None):
         with store.connect() as conn:
             events = [dict(row) for row in conn.execute("SELECT * FROM events ORDER BY id DESC")
                       if "device" not in user or field.event_access(conn, row["id"], user["actor"])]
+            passkey_session = conn.execute("""SELECT expires_at FROM field_devices WHERE token_hash=?
+                                           AND auth_method='passkey'""", (user["device"],)).fetchone() if "device" in user else None
         return {"mode": mode, "events": events, "roles": ["dispatcher", "staff"],
                 "identity": {k: v for k, v in user.items() if k != "device"}, "field_binding_enabled": field.enabled,
+                "email_enrollment": field.email_enrollment,
+                "passkey_session_expires_at": passkey_session["expires_at"] if passkey_session else None,
                 "ptt_event_id": settings.media.event_id if settings.media else None,
                 "private_calls_enabled": bool(settings.media and field.enabled),
                 "video_enabled": settings.video_enabled, "voice_archive_enabled": voice_archive is not None,
@@ -288,8 +309,11 @@ def create_app(db_path=None):
 
     @app.post("/api/events/{event_id}/actions")
     def action(event_id: str, body: ActionInput, user=Depends(identity)):
+        active_bridge = app.state.foundry_bridge
+        if active_bridge is not None and active_bridge.settings.mode == "primary":
+            active_bridge.forward_task_action(event_id, body, user)
         with store.connect(write=True) as conn:
-            receipt, _ = execute_task_action(
+            receipt, deduplicated = execute_task_action(
                 conn,
                 event_id,
                 definitions,
@@ -299,7 +323,9 @@ def create_app(db_path=None):
                 new_id_fn=new_id,
                 enrich_conflict=False,
             )
-            return receipt
+        if active_bridge is not None and active_bridge.settings.mode == "shadow" and not deduplicated:
+            active_bridge.forward_task_action(event_id, body, user)
+        return receipt
 
     web = ROOT / "web"
     if web.is_dir():

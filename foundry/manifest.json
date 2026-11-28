@@ -1,0 +1,24 @@
+{
+  "format": "ontology-installation-v1",
+  "allowReviewedDefinitions": true,
+  "definition": "toc-ontology.package.json",
+  "definitionDigest": "fdf68bebe5a9912b1e7fec54baa2211a2fea56eaaa8a134777ca271247eb074a",
+  "publicSkills": [
+    {
+      "id": "toc-dispatch-copilot",
+      "name": "TOC Dispatch Copilot",
+      "description": "Read-only operational awareness, reception window calculation, and HITL Scenario proposals for Project TOC",
+      "tags": [
+        "toc",
+        "dispatch",
+        "golf",
+        "conference",
+        "hitl"
+      ]
+    }
+  ],
+  "implementation": {
+    "file": "implementation.mjs",
+    "sha256": "879dcfd79534114647fbec730c6173110503e487968f115ffda7df9db374bd99"
+  }
+}

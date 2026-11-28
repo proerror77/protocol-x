@@ -52,19 +52,24 @@
             android:foregroundServiceType="connectedDevice|dataSync" />
         <service android:name=".ArrivalWatchService" android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- Use singleTask + documentLaunchMode="never" so App Links (/activate) and notification
+             PendingIntents reuse the single app task instead of spawning duplicate Recents tasks;
+             startActivityForResult works normally from singleTask on minSdk 26+. -->
         <activity
             android:name=".MainActivity"
+            android:documentLaunchMode="never"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="content" android:mimeType="application/vnd.protocolx.login+json" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${protocolXPasskeyHost}" android:path="/activate" />
             </intent-filter>
         </activity>
     </application>

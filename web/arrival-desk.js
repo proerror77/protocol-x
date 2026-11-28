@@ -434,20 +434,58 @@ export function createArrivalDesk({ api, getPhoto, context, refresh, openTask, c
     $('arrival-team-result').hidden = false;
   }
 
+  let loginRoster = [];
+  const selectedPerson = () => loginRoster.find((person) => person.actor === $('arrival-team-person').value);
+  const fillLoginEmail = () => { $('arrival-team-email').value = selectedPerson()?.login_email ?? ''; };
+  $('arrival-team-person').onchange = fillLoginEmail;
+
+  async function loadLoginRoster(state) {
+    const { people } = await api(`/api/field/events/${encodeURIComponent(state.eventId)}/directory`);
+    if (!team.open || state.eventId !== context().eventId) return;
+    loginRoster = people;
+    $('arrival-team-person').replaceChildren(...people.map((person) => new Option(person.name, person.actor)));
+    $('arrival-team-reissue').hidden = !people.length;
+    fillLoginEmail();
+  }
+
   $('arrival-team-open').onclick = async () => {
     $('arrival-team-form').reset();
     $('arrival-team-result').hidden = true;
     $('arrival-team-error').textContent = '';
+    $('arrival-team-status').textContent = '';
     $('arrival-team-reissue').hidden = true;
     team.showModal();
     const state = context();
+    const email = state.bootstrap?.email_enrollment === true;
+    $('arrival-team-save').textContent = email ? '添加人员' : '生成个人绑定码';
+    $('arrival-team-new-email').hidden = !email;
+    $('arrival-team-login-email').hidden = !email;
+    $('arrival-team-invite').hidden = email;
     try {
-      const { people } = await api(`/api/field/events/${encodeURIComponent(state.eventId)}/directory`);
-      if (!team.open || state.eventId !== context().eventId) return;
-      $('arrival-team-person').replaceChildren(...people.map((person) => new Option(person.name, person.actor)));
-      $('arrival-team-reissue').hidden = !people.length;
+      await loadLoginRoster(state);
     } catch (err) {
       $('arrival-team-error').textContent = err.message;
+    }
+  };
+  $('arrival-team-approve-email').onclick = async (event) => {
+    const person = selectedPerson();
+    const input = $('arrival-team-email');
+    if (!person || !input.reportValidity()) return;
+    const button = event.currentTarget;
+    const eventId = context().eventId;
+    button.disabled = true;
+    $('arrival-team-status').textContent = '';
+    $('arrival-team-error').textContent = '';
+    try {
+      const path = `/api/field/events/${encodeURIComponent(eventId)}/people/${encodeURIComponent(person.actor)}/login-email`;
+      const result = await api(path, { method: 'POST', body: JSON.stringify({ email: input.value.trim() || null }) });
+      person.login_email = result.login_email;
+      if (selectedPerson() === person) fillLoginEmail();
+      $('arrival-team-status').textContent = result.login_email ? '已批准登录邮箱' : '已撤销登录邮箱批准';
+    } catch (err) {
+      $('arrival-team-error').textContent = err.message;
+    } finally {
+      button.disabled = false;
     }
   };
   $('arrival-team-invite').onclick = async (event) => {
@@ -477,17 +515,23 @@ export function createArrivalDesk({ api, getPhoto, context, refresh, openTask, c
     const root = `/api/field/events/${encodeURIComponent(state.eventId)}`;
     const submit = $('arrival-team-save');
     const error = $('arrival-team-error');
+    const email = state.bootstrap?.email_enrollment === true;
+    $('arrival-team-status').textContent = '';
     submit.disabled = true;
     try {
       let { channels } = await api(`${root}/directory`);
       let group = channels.find(({ kind, name }) => kind === 'group' && name === '接待组');
       if (!group) group = await api(`${root}/channels`, { method: 'POST', body: JSON.stringify({ name: '接待组' }) });
-      const result = await api(`${root}/people`, { method: 'POST', body: JSON.stringify({
+      const body = {
         name: values.name, callsign: values.callsign, role: values.role, channel_ids: [group.id],
-      }) });
-      showInvitation(result);
+      };
+      if (email && values.login_email.trim()) body.login_email = values.login_email.trim();
+      const result = await api(`${root}/people`, { method: 'POST', body: JSON.stringify(body) });
+      if (email) $('arrival-team-status').textContent = '已添加接待人员';
+      else showInvitation(result);
       $('arrival-team-form').reset();
       error.textContent = '';
+      await loadLoginRoster(state);
       await refresh();
     } catch (err) {
       error.textContent = err.message;

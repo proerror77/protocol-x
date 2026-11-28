@@ -1,0 +1,14 @@
+{
+  "name": "@toc/foundry-solution",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Project TOC Ontology Solution Package for MDN Man Do Nothing Foundry (@mdn-foundry/engine v0.2.1)",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "node scripts/build-package.mjs",
+    "test": "node scripts/test-solution.mjs"
+  }
+}
