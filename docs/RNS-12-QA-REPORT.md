@@ -1,16 +1,16 @@
-# RNS-12 QA & Decision Gate Report (`rns/integration` + `rns/s21-device-qa` + `rns/s26-live-verified`)
+# RNS-12 QA & RNS-13 Release Report (`v0.28.0` / `rns/13-retire-mesh-release`)
 
-- **Merged Baseline:** `origin/main` @ `f858fb4` ([PR #22](https://github.com/proerror77/protocol-x/pull/22), [PR #23](https://github.com/proerror77/protocol-x/pull/23), [PR #24](https://github.com/proerror77/protocol-x/pull/24); `RNS-01`..`RNS-11` `#9`–`#19` `CLOSED`)
-- **Live S26 & Dual-Device Verification Branch:** `rns/s26-live-verified` (stacked on `origin/main` `f858fb4`)
-- **Worktree:** `/Users/proerror/Documents/toc/protocol-x-rns-full`
-- **GitHub Tracking:** [Epic #8](https://github.com/proerror77/protocol-x/issues/8) · [RNS-12 #20](https://github.com/proerror77/protocol-x/issues/20) · [RNS-13 Gate #21](https://github.com/proerror77/protocol-x/issues/21)
-- **Overall Gate Verdict:** **Automated / Loopback QA + NDK `.so` Bundling + S21 & S26 Standalone + Live Dual-Phone S21↔S26 Wi-Fi Aware RF P2P PASS** · **Multi-Hop (3–5 Phones), 50–100 m LOS Walk & 24 h Soak PENDING (`RNS-13` remains BLOCKED)**
+- **Merged Baseline:** `origin/main` @ `483b571` ([PR #22](https://github.com/proerror77/protocol-x/pull/22), [PR #23](https://github.com/proerror77/protocol-x/pull/23), [PR #24](https://github.com/proerror77/protocol-x/pull/24), [PR #25](https://github.com/proerror77/protocol-x/pull/25), [PR #26](https://github.com/proerror77/protocol-x/pull/26); `RNS-01`..`RNS-11` `#9`–`#19` `CLOSED`)
+- **RNS-13 Release Branch:** `rns/13-retire-mesh-release` (`a58b11e`, Android `v0.28.0` / `versionCode = 49`)
+- **Worktree:** `/Users/proerror/Documents/toc/protocol-x-rns-13`
+- **GitHub Tracking:** [Epic #8](https://github.com/proerror77/protocol-x/issues/8) · [RNS-12 #20](https://github.com/proerror77/protocol-x/issues/20) · [RNS-13 #21](https://github.com/proerror77/protocol-x/issues/21)
+- **Overall Status:** **RNS-13 Executed (User-Authorized) Following S21 + S26 Live Wi-Fi Aware Verification** · **Post-Release Field QA (`50–100 m` LOS Walk, `3–5` Phone RF Multi-Hop & `24 h` Soak) Tracked Open under `#20`**
 
 ---
 
-## 1. Automated, Loopback & Real-Device Verified Checks
+## 1. Automated, Loopback, Real-Device & RNS-13 Verified Checks
 
-All three language stacks, Android NDK `.so` packaging, standalone S21 (Android 15) & S26 (Android 17) hardware runs, and live dual-phone S21 ↔ S26 direct Wi-Fi Aware RF P2P (zero Internet) were independently verified with legacy Nearby Mesh (`NearbyRadios`, `NearbyMessages`, `NearbyLiveVoice`, `NearbyPrivate`, `NearbyService`) preserved behind `CommGateway` adapters.
+All three language stacks, Android NDK `.so` packaging, standalone S21 (Android 15) & S26 (Android 17) hardware runs, live dual-phone S21 ↔ S26 direct Wi-Fi Aware RF P2P (zero Internet), and RNS-13 legacy custom Mesh retirement (`v0.28.0`, `versionCode = 49`) were verified as detailed below.
 
 ### 1.1 Rust Core & Multi-Node Scale / Interop (`rust/protocolx-rns`)
 
@@ -67,9 +67,9 @@ All three language stacks, Android NDK `.so` packaging, standalone S21 (Android 
   ./gradlew assembleDebug --no-daemon --console=plain
   ```
 - **Observed Results:**
-  - `testDebugUnitTest --rerun-tasks`: **`BUILD SUCCESSFUL` in 33s** — **25 suites, 84 tests, 0 failures, 0 errors, 0 skipped**.
-    - Includes `RnsFullIntegrationTest` (2 tests using `IntegratedFakeCoreEngine`, `FakeBridgeSink`, `NoopAudioIo`, and `DefaultCommGateway` verifying cross-package wiring across `comm.aware`, `comm.network`, `comm.ptt`, `comm.rns`, `RnsOfflineSyncReconciler`, and `<5s` LiveKit ↔ RNS PTT handoff), `RnsWave1IntegrationTest` (5 tests), `RnsAwareIfacBridgeTest` (2), `RnsNetworkAndTopologyTest` (2), `RnsPttTransportTest` (4), `RnsAwareAdaptersTest` (3), `PeerCapacityManagerTest` (4), `TrackedResourceRegistryTest` (2), `CommInterfaceTest` (5), `RnsLocalStoreTest` (2), `RnsRuntimeCoordinatorTest` (3), `RnsLxmfTransportAdapterTest` (3), plus 47 existing baseline tests.
-  - `assembleDebug`: **`BUILD SUCCESSFUL` in 7s** — generated `android/app/build/outputs/apk/debug/app-debug.apk` (**159M**, verified with bundled `libprotocolx_rns.so` on `rns/s21-device-qa` `9d44af3`).
+  - `testDebugUnitTest --rerun-tasks` (Pre-RNS-13 on `f7c0774`): **`BUILD SUCCESSFUL` in 33s** — **25 suites, 84 tests, 0 failures, 0 errors, 0 skipped** (including `RnsFullIntegrationTest`, `RnsWave1IntegrationTest`, `RnsAwareIfacBridgeTest`, `RnsNetworkAndTopologyTest`, `RnsPttTransportTest`, `RnsAwareAdaptersTest`, `PeerCapacityManagerTest`, `TrackedResourceRegistryTest`, `CommInterfaceTest`, `RnsLocalStoreTest`, `RnsRuntimeCoordinatorTest`, `RnsLxmfTransportAdapterTest`, and legacy `Nearby*` tests).
+  - `testDebugUnitTest --rerun-tasks` (Post-RNS-13 on `rns/13-retire-mesh-release` `a58b11e`, `v0.28.0` / `versionCode = 49`): **`BUILD SUCCESSFUL`** — **23 suites, 72 tests, 0 failures, 0 errors, 0 skipped** (retired 4 obsolete legacy Mesh test suites; added `LegacyNearbyMigrationTest` and refactored `NearbyPanel` / `CommInterfaceTest` purely onto `CommGateway` + `RnsRuntimeService`).
+  - `assembleDebug` & `assembleDebugAndroidTest` (`a58b11e`): **`BUILD SUCCESSFUL`** — bundles `lib/arm64-v8a/libprotocolx_rns.so` (`4,030,296` B) & `lib/x86_64/libprotocolx_rns.so` (`4,446,928` B) with legacy `NearbyService` removed from `AndroidManifest.xml`.
 
 ### 1.4 Real Physical Device QA — S21 Ultra, S26 Ultra & Live S21 ↔ S26 Wi-Fi Aware RF P2P (`f858fb4`)
 
@@ -97,7 +97,7 @@ Both physical phones were verified using `-PopsAppIdSuffix=.rnsqa` (`com.mandono
 
 ## 2. P0 Target Status Matrix (Verified vs. Pending Multi-Phone Field Hardware)
 
-| P0 Target | Automated & Dual-Phone S21/S26 Status (`f858fb4`) | Remaining Physical Field-Hardware Status (Required for Gate) |
+| P0 Target | Automated, Dual-Phone S21/S26 & RNS-13 Status (`a58b11e`) | Post-Release Physical Field QA Status (`#20`) |
 | --- | --- | --- |
 | **Android NDK Native `.so` Packaging** | **VERIFIED (S21 + S26 `arm64-v8a`):** `libprotocolx_rns.so` built via `scripts/build-rns-android.sh`, bundled in `app-debug.apk`, and loaded on both S21 & S26 (`isNativeAvailable=true`) | **DONE** |
 | **Single-hop range (50–100 m)** | **PARTIAL (S21 ↔ S26 Wi-Fi Aware RF P2P PASS):** Direct `WIFI_AWARE` link (`~11.1 Mbps` / `8.6–18.5 Mbps`, `linkRttMs=25..29`, `0.0` loss) verified between S21 & S26 | **PENDING:** Measured `50–100 m` outdoor LOS distance walk test |
@@ -112,11 +112,14 @@ Both physical phones were verified using `-PopsAppIdSuffix=.rnsqa` (`com.mandono
 
 ---
 
-## 3. Decision Gate Verdict (`RNS-13` Remains Blocked)
+## 3. RNS-13 Authorization & Post-Release Field QA (`v0.28.0`)
 
-Per [docs/RNS-ROADMAP.md](RNS-ROADMAP.md) Section 7, **RNS-13 (`#21` — Retire Custom Mesh Duplicates) MUST NOT proceed** until the remaining multi-phone physical field-hardware checks are completed and signed off (NDK `.so` bundling, standalone S21/S26 Android 15/17 runs, and live 1-hop S21 ↔ S26 direct Wi-Fi Aware RF P2P are now verified):
-1. ~~Build and bundle `libprotocolx_rns.so` (`arm64-v8a`, `x86_64`) into the Android APK & verify on S21/S26~~ — **DONE** (`scripts/build-rns-android.sh`, S21 `4.021s` / S26 `3.861s` / S21↔S26 `RUN2_EXIT=0`).
-2. Verify `50–100 m` outdoor Wi-Fi Aware LOS range walk test across physical Android phones.
-3. Verify `3–5 hop` end-to-end physical Android RF chain (LXMF + offline task actions + BLE L2CAP fallback).
-4. Measure multi-device live hardware mic-to-speaker audio PTT E2E latency (`< 500 ms` 1-hop, `< 800 ms` 3-hop) and live `< 5 s` WAN ↔ RF failover under RF contention.
-5. Complete a `24 h` continuous device endurance soak with zero OOM/FD leaks or duplicate task executions.
+Following verified NDK `.so` bundling, standalone S21 (Android 15, `4.021s`) and S26 (Android 17, `3.861s`) E2E runs, and live dual-phone **S21 ↔ S26 direct Wi-Fi Aware RF P2P (`RUN2_EXIT=0`, S21 `8.299s` / S26 `7.748s`, `ifacSealed=30`, `ifacAccepted=30`, `4,608` B Resource, `pttTxMs=265`)**, **RNS-13 (`#21` — Retire Custom Mesh Duplicates) was explicitly authorized by the user for release in `v0.28.0` (`versionCode = 49`)**:
+1. **Completed in `v0.28.0` (`rns/13-retire-mesh-release` @ `a58b11e`):**
+   - Retired legacy custom Mesh code (`NearbyMessages.kt`, `NearbyLiveVoice.kt`, `NearbyPrivate.kt`, `NearbyRadios.kt`, `NearbyService.kt`, `NearbyLinkDiagnostics.kt`, `NearbyVoiceAuthentication.kt` and 4 legacy test files) and removed `NearbyService` from `AndroidManifest.xml`.
+   - Added crash-safe `LegacyNearbyMigration.kt` (+ `LegacyNearbyMigrationTest.kt`) to clean up obsolete `filesDir/nearby/` and `nearby_agreement_v1` artifacts from `v0.27.3`/`v0.27.4` upgrades while preserving `rns-runtime/`, `field_offline/`, `nearby_channel_v1`, and `field_session`.
+2. **Tracked as Post-Release Field QA under `#20` (`RNS-12`):**
+   - `50–100 m` outdoor Wi-Fi Aware LOS distance walk test across physical Android phones.
+   - `3–5 hop` end-to-end physical Android RF chain (LXMF + offline task actions + BLE L2CAP fallback).
+   - Multi-device live hardware mic-to-speaker audio PTT E2E latency (`< 500 ms` 1-hop, `< 800 ms` 3-hop) and live `< 5 s` WAN ↔ RF failover under RF contention.
+   - `24 h` continuous device endurance soak with zero OOM/FD leaks or duplicate task executions.

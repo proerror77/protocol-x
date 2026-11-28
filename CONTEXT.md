@@ -39,3 +39,14 @@
 
 **接待时间线**：
 按发生时间记录机场观测、调度建议、业务确认与实际交接。
+
+## 离线与战术通信架构（v0.28.0 RNS P0）
+
+**RNS 私有网状网络（Private RNS / LXMF）**：
+基于 Rust `protocolx-rns`（UniFFI）与 Android Wi-Fi Aware / BLE L2CAP 适配的加密通信层，使用按活动和频道派生的私有 IFAC 隔离（零公网 RNS 依赖），在 `v0.28.0` 取代早期自研单跳 Nearby Mesh 协议。
+
+**统一通信网关（CommGateway & NetworkManager）**：
+Android 客户端统一通过 `CommGateway` 调度公网 HTTP/LiveKit、局域网 RNS 与 Wi-Fi Aware / BLE L2CAP 链路，在无公网时自动切换至 RNS 多跳消息、附件与 PTT。
+
+**离线行动幂等同步（EnvelopeV1 / RNS-09）**：
+无网现场人员确认接单、分步进度或求助汇报后，经 RNS 多跳中继至 `POST /api/rns/v1/envelopes` 或 `RnsGateway` 写入 TOC，沿用 `idempotency_key` 与 `expected_version` 保证零重复执行，并同步回传回执与 TAK CoT 态势。

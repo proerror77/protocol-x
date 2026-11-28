@@ -9,6 +9,8 @@ Android 客户端、指挥台 API 和频道权限源码都在这个目录。Andr
 3. 记录 APK 版本、构建号、提交 SHA 和 APK SHA-256。服务端部署和真机验收各自记录。
 4. 在同版本的公开 GitHub Release 上传 `Protocol_X_v<版本>.apk` 和 `protocol-x-android.json`。清单字段为 `version_name`、`version_code`、`bytes`、`sha256`，均来自签名后的 APK。App 从「更多 → 关于 Protocol X」检查更新。
 
+0.28.0（`versionCode = 49`）完成 RNS P0 战术网状通信升级与 RNS-13 收尾：集成 Rust Reticulum/LXMF 核心（UniFFI `0.33.0` + `arm64-v8a`/`x86_64` NDK `.so`）、`CommGateway` 统一通信抽象、`RnsWifiAwareAdapter` / `RnsBleL2capAdapter` 无线电适配、私有 IFAC 隔离与设备撤销、`RnsNetworkManager` 自动故障切换、离线任务与附件同步（`/api/rns/v1/envelopes`）、多跳 PTT 与 `app/rns_gateway.py` TOC/OpenTAKServer 网关，并淘汰 `NearbyMessages` / `NearbyLiveVoice` / `NearbyPrivate` / `NearbyRadios` / `NearbyService` 等自研旧 Mesh 重复代码（附 `LegacyNearbyMigration` 启动清理）。
+
 0.27.1 汇合了 0.27.0 的附近通信、频道动态增量更新和 0.26.3 的 PTT 尾音优化。定向私信和照片依赖新版频道公钥接口。
 
 ## Android 工作人员端 MVP v0.3（历史说明）
@@ -82,10 +84,11 @@ Docker 用户可执行 `docker compose up --build`。本交付环境没有 Docke
 | 后端角色、任务归属与跨活动引用检查 | 已实现演示约束；身份头可自行切换，不是真实认证 |
 | 资源占用与容量 | 已实现整个活动内的独占检查；尚无时间窗和跨活动全局预留 |
 | 现场事实和系统写入区分 | 接单和重分配不推进交接事实。现场节点由有权限的操作员确认，每次确认单独记回执 |
-| 原生手机 PTT / 视频 / 语音转写 | App 分为频道、任务和记录。视频和语音记录按活动配置 |
-| OpenTAKServer / CoT | 试点支持定向共享文字汇报与点位并回读服务端回执。实体终端与反向点位联调待验收 |
-| 飞行、GPS、路线、风速、地图 | 未接入 |
-| 推送、后台运行、离线队列、消息投递回执 | 未接入 |
+| 原生手机 PTT / 视频 / 语音转写 | App 分为频道、任务和记录；在线走 LiveKit + Ops 话权，离线/无公网走 RNS 多跳 PTT（`RnsPttSessionTransport`）与 `RnsNetworkManager` 自动切换 |
+| 私有 RNS / LXMF 多跳近场通信 | Rust `protocolx-rns`（`personal-rns` `0.3.7` + UniFFI `.so`）+ Wi-Fi Aware / BLE L2CAP 适配 + 私有 IFAC 隔离 + `POST /api/rns/v1/envelopes` 幂等离线同步；自研旧 Mesh 代码已在 `v0.28.0` 淘汰 |
+| OpenTAKServer / CoT | 试点支持定向共享文字汇报与点位并回读服务端回执；新增 `app/rns_gateway.py` 与 `/api/events/{event_id}/tak/inbound` 双向 CoT 投影与回流抑制 |
+| 飞行、GPS、路线、风速、地图 | 航班观测与接机追踪已接入；通用路线、风速与态势地图增强持续演进中 |
+| 推送、后台运行、离线队列、消息投递回执 | Android 已接入 `FieldOfflineStore`、`PhotoOutbox`、`ChannelAttachmentFiles`、`RnsLocalStore`、`RnsRuntimeService` 离线队列与投递回执；`50–100 m` 户外 LOS、3–5 机物理多跳与 24 h 耐久为发版后现场 QA 项 |
 | 账户与权限 | 受控试点用两个独立角色访问码。个人账户、OIDC、多活动成员权限和数据保留待实施 |
 
 ## 4. 代码组织
@@ -100,6 +103,10 @@ Docker 用户可执行 `docker compose up --build`。本交付环境没有 Docke
 | `ontologies/golf.json` | TransferLeg、Vehicle、接机服务事实与 Binding |
 | `ontologies/conference.json` | Session、Room、会议里程碑与 Binding |
 | `tests/test_runtime.py` | 权限、引用、并发、版本、幂等与事实隔离检查 |
+| `rust/protocolx-rns/` | Rust Reticulum/LXMF 核心与 UniFFI 绑定，产出 `arm64-v8a` / `x86_64` `libprotocolx_rns.so` |
+| `android/.../comm/` | 统一通信接口（`CommGateway`）、`comm.rns`、`comm.aware`、`comm.network`、`comm.ptt` 与 `LegacyNearbyMigration` |
+| `app/rns_envelopes.py` & `app/rns_gateway.py` | RNS 统一信封幂等入库（`/api/rns/v1/envelopes`）与私有 IFAC Python `rns`/`lxmf` TOC/TAK 网关 |
+| `docs/RNS-ROADMAP.md` & `docs/RNS-TOC-CONTRACT.md` | RNS P0 升级路线图、Track A/B 统一契约与 `docs/RNS-12-QA-REPORT.md` 验收记录 |
 | `docs/API-CONTRACT.md` | 当前可调用 API 契约 |
 | `docs/KICKOFF-PLAN.md` | 两周启动排程、系统边界、后续验收 |
 | `docs/VALIDATION.md` | 本次实际验证与未验证范围 |
