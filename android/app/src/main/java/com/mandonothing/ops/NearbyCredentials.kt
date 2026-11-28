@@ -1,12 +1,86 @@
 package com.mandonothing.ops
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import android.util.Base64
 import org.json.JSONObject
 import java.security.KeyFactory
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.Signature
+import java.security.spec.ECGenParameterSpec
 import java.security.spec.X509EncodedKeySpec
+import java.util.UUID
 import java.util.Base64 as WireBase64
+
+internal const val NEARBY_TEXT_LIMIT = 200
+internal const val NEARBY_AUDIO_LIMIT = 48_000
+internal const val NEARBY_PRIVATE_PHOTO_LIMIT = 32_000
+
+internal fun nearbyPermissions(context: Context): List<String> = buildList {
+    val features = context.packageManager
+    if (Build.VERSION.SDK_INT >= 31 && features.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
+        add(Manifest.permission.BLUETOOTH_CONNECT)
+        add(Manifest.permission.BLUETOOTH_SCAN)
+        add(Manifest.permission.BLUETOOTH_ADVERTISE)
+    }
+    if (Build.VERSION.SDK_INT >= 33 && features.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
+        add(Manifest.permission.NEARBY_WIFI_DEVICES)
+    }
+    if (Build.VERSION.SDK_INT in 29..32) {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+}
+
+/**
+ * Derives event/channel-scoped radio discovery identifiers (`serviceName`, `wifiPassword`,
+ * `radioUuid`) from the backend-issued `/nearby` credential secret for RNS Wi-Fi Aware & BLE L2CAP.
+ */
+internal class NearbyGroup(val code: String, private val event: String) {
+    private val secret = WireBase64.getUrlDecoder().decode(code)
+
+    private fun derive(purpose: String): ByteArray = MessageDigest.getInstance("SHA-256")
+        .digest((purpose + "|" + event + "|").toByteArray() + secret)
+
+    val serviceName: String = "protocolx." + derive("discovery").take(12).joinToString("") { "%02x".format(it) }
+    val wifiPassword: String = WireBase64.getUrlEncoder().withoutPadding().encodeToString(derive("wifi"))
+    val radioUuid: UUID = UUID.nameUUIDFromBytes(derive("bluetooth"))
+
+    companion object {
+        fun isSecret(value: String): Boolean =
+            value.matches(Regex("[A-Za-z0-9_-]{43}")) &&
+                WireBase64.getUrlEncoder().withoutPadding().encodeToString(WireBase64.getUrlDecoder().decode(value)) == value
+    }
+}
+
+/**
+ * AndroidKeyStore EC keypair (`secp256r1`) used solely to present a stable device `public_key`
+ * when requesting `/nearby` credential leases from Ops.
+ */
+internal class NearbyProvisioningIdentity(scope: String) {
+    private val alias = "protocol-x-nearby-" + scope
+    private val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    private val keys = store.getEntry(alias, null) as? KeyStore.PrivateKeyEntry ?: generate()
+    val publicKey: String = WireBase64.getEncoder().encodeToString(keys.certificate.publicKey.encoded)
+
+    private fun generate(): KeyStore.PrivateKeyEntry {
+        KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").apply {
+            initialize(
+                KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
+                    .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                    .setDigests(KeyProperties.DIGEST_SHA256)
+                    .build(),
+            )
+            generateKeyPair()
+        }
+        return store.getEntry(alias, null) as KeyStore.PrivateKeyEntry
+    }
+}
 
 internal data class NearbyRecipient(val actor: String, val name: String, val publicKey: String)
 internal data class NearbyVerifiedIdentity(val actor: String, val name: String, val agreementKey: String?)

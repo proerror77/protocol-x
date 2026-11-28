@@ -44,9 +44,6 @@
             android:name=".VoiceSessionService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback|microphone" />
-        <service android:name=".NearbyService"
-            android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
         <service android:name=".comm.rns.RnsRuntimeService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|dataSync" />

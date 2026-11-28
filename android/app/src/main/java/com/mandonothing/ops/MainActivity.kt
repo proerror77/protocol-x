@@ -352,6 +352,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        scope.launch(Dispatchers.IO) { LegacyNearbyMigration.run(applicationContext) }
         if (intent.hasExtra("field_event")) fieldNotice = intent
         window.statusBarColor = BACKGROUND
         window.navigationBarColor = BACKGROUND

@@ -87,6 +87,13 @@ The optional join body `{callsign}` sets up to 32 printable characters for the p
 
 Android 在「更多 → 开启后台航班提醒」开启本班值守，与对讲频道独立。系统通知打开同一活动的接待卡，用户结束值班或退出个人账号会停止后台监听。Android 15 的 dataSync 前台服务受平台后台时限约束。设备强制停止应用后须重新打开并开启值守。
 
-## 频道附近通信
+## 频道附近通信与 RNS P0 离线/网关同步（v0.28.0）
 
-已绑定设备向 `POST /api/field/events/{event_id}/nearby` 提交设备的 P-256 公钥（Base64 编码的 SubjectPublicKeyInfo）。响应包含签发方公钥和该人员当前有权进入的工作群组凭证。凭证有 12 小时离线有效期。Android 将凭证加密保存在本机，打开原频道时自动启用 Wi-Fi Aware 和蓝牙。成员退出、停用或设备被撤销后，下一次授权同步会为剩余成员轮换对应的频道密钥。已断网设备最多使用此前取得的凭证至到期。文字和语音留言使用同一频道的本机记录，任务求助另沿用原有服务端回执。
+详细结构化契约见 [docs/RNS-TOC-CONTRACT.md](RNS-TOC-CONTRACT.md)（`protocol-x.rns.envelope/v1`）。
+
+- **RNS 设备绑定与 IFAC 凭证（`POST /api/field/events/{event_id}/nearby` & `GET /api/field/events/{event_id}/nearby/revocations`）：**
+  已绑定设备提交 P-256 公钥及可选 `rns_identity`（`dest_hash`、`identity_hash`、`ed25519_pub`、`x25519_pub`）。服务端返回 12 小时有效的群组凭证、按频道派生的私有 IFAC 参数（`network_name`、`passphrase`、`generation`）、`rns_gateway` 与 `rns_peers`。成员退出、停用或设备被撤销时立即轮换密钥并写入 CRL（`/nearby/revocations`）。Android `v0.28.0` 统一经 `RnsRuntimeService`（Wi-Fi Aware / BLE L2CAP + Rust RNS/LXMF）传输并执行 `LegacyNearbyMigration` 清理旧版自研 Mesh 缓存。
+- **统一 RNS 信封入库（`POST /api/rns/v1/envelopes` & `POST /api/rns/v1/envelopes/batch`）：**
+  接收本端或经多跳中继的签名 `EnvelopeV1`（`task`、`message`、`attachment`、`location`、`delivery_receipt`），按 `(event_id, envelope_id)`、payload `fingerprint` 与业务层 `idempotency_key` 执行三层去重（0 重复行动）；版本冲突时返回带 `current_version`、`current_status`、`current_progress` 与 `allowed_actions` 的 `409` 结构化信息。
+- **RNS / TAK 网关（`POST /api/rns/v1/gateway/dispatch`、`GET /api/rns/v1/gateway/status`、`POST /api/events/{event_id}/tak/inbound`、`GET /api/events/{event_id}/tak/deliveries`）：**
+  私有 IFAC Python `rns`/`lxmf` 网关双向桥接 RNS 现场网状节点、TOC 工作区与 OpenTAKServer CoT（支持回读确认、确定性 UID 去重与回流抑制）。
