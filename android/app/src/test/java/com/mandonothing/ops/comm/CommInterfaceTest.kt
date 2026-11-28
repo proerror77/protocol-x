@@ -1,10 +1,5 @@
 package com.mandonothing.ops.comm
 
-import com.mandonothing.ops.NearbyDelivery
-import com.mandonothing.ops.NearbyDiagnosticSnapshot
-import com.mandonothing.ops.NearbyMessage
-import com.mandonothing.ops.NearbyPrivateContent
-import com.mandonothing.ops.NearbyRadio
 import com.mandonothing.ops.PttPcmSnapshot
 import com.mandonothing.ops.VideoState
 import com.mandonothing.ops.VoiceCapturedClip
@@ -113,94 +108,6 @@ class CommInterfaceTest {
             )
         )
         assertEquals(CommTransportKind.RNS_MESH, CommRouterPolicy.selectBestRoute(rnsConnected, false))
-    }
-
-    @Test
-    fun nearbyMapperMapsNetworkStateAndMessageEnvelopesWithoutRegression() {
-        val network = NearbyCommMapper.toNetworkState(
-            radios = mapOf(NearbyRadio.WIFI to "已连接", NearbyRadio.BLE to "正在发现"),
-            diagnostics = NearbyDiagnosticSnapshot(
-                wifiPeers = 2,
-                bluetoothPeers = 0,
-                reachablePeers = 2,
-                lastActivityMillis = 1_000L,
-                lastDeliveryMillis = 900L,
-                lastDeliveryRoute = NearbyRadio.WIFI,
-                liveVoicePeers = 1,
-            ),
-            credential = null,
-            activeScopeKey = "scope-1",
-            hasInternet = true,
-            validatedInternet = false,
-            serverReachable = false,
-        )
-        assertEquals(CommReachability.CONNECTED, network.links[CommTransportKind.WIFI_AWARE]?.reachability)
-        assertEquals(CommReachability.DISCOVERING, network.links[CommTransportKind.BLE_L2CAP]?.reachability)
-        assertEquals(CommReachability.DEGRADED, network.links[CommTransportKind.INTERNET_HTTP]?.reachability)
-        assertEquals(CommTransportKind.WIFI_AWARE, network.bestRoute)
-        assertEquals(CommTransportKind.WIFI_AWARE, network.lastDeliveryKind)
-        assertTrue(network.hasAnyPeerLink)
-
-        assertEquals(CommDeliveryState.QUEUED, NearbyCommMapper.toDeliveryState(NearbyDelivery.WAITING, false))
-        assertEquals(
-            CommDeliveryState.AWAITING_RECEIPT,
-            NearbyCommMapper.toDeliveryState(NearbyDelivery.AWAITING_RECEIPT, false),
-        )
-        assertEquals(CommDeliveryState.DELIVERED, NearbyCommMapper.toDeliveryState(NearbyDelivery.DELIVERED, false))
-        assertEquals(CommDeliveryState.SYNCED, NearbyCommMapper.toDeliveryState(NearbyDelivery.DELIVERED, true))
-        assertEquals(CommDeliveryState.EXPIRED, NearbyCommMapper.toDeliveryState(NearbyDelivery.EXPIRED, false))
-
-        val msg = NearbyMessage(
-            id = "msg-1",
-            sender = "abcd1234abcd1234abcd1234abcd1234",
-            name = "张三",
-            text = "加密定向消息",
-            audio = "",
-            time = 42_000L,
-            assistance = false,
-            publicKey = "pk",
-            signature = "sig",
-            certificate = "cert",
-            received = true,
-            synced = false,
-            attemptedVia = NearbyRadio.BLE,
-            deliveredVia = NearbyRadio.WIFI,
-            confirmationRequired = true,
-            recipient = "actor-2",
-            sealedPayload = "AQID",
-            actor = "actor-1",
-        )
-        val receipt = NearbyMessage(
-            id = "rcpt-1",
-            sender = "11112222333344441111222233334444",
-            name = "李四",
-            text = "队员确认",
-            audio = "",
-            time = 43_000L,
-            assistance = false,
-            publicKey = "pk2",
-            signature = "sig2",
-            certificate = "cert2",
-            confirmationFor = "msg-1",
-            recipient = "actor-1",
-            actor = "actor-2",
-        )
-        val envelope = NearbyCommMapper.toEnvelope(
-            message = msg,
-            scope = sampleScope,
-            localSender = msg.sender,
-            localActor = "actor-1",
-            receipts = listOf(receipt),
-            privateContent = NearbyPrivateContent("改在 B2 门", byteArrayOf(1, 2, 3)),
-        )
-        assertEquals(CommEnvelopeKind.PRIVATE_ENCRYPTED, envelope.kind)
-        assertTrue(envelope.isMine)
-        assertTrue(envelope.isPrivate)
-        assertEquals("改在 B2 门", envelope.text)
-        assertEquals("AQID", envelope.photoBase64)
-        assertEquals(CommDeliveryState.DELIVERED, envelope.deliveryState)
-        assertEquals(CommTransportKind.WIFI_AWARE, envelope.route.deliveredTransport)
-        assertEquals(listOf("李四"), envelope.readByNames)
     }
 
     @Test

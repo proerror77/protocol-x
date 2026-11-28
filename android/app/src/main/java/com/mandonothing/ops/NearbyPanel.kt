@@ -37,7 +37,6 @@ internal class NearbyPanel(
     private val main = Handler(Looper.getMainLooper())
     private var finishAtLimit: Runnable? = null
     private var recorder: MediaRecorder? = null
-    private var liveHold: NearbyLiveVoice? = null
     private var recording: File? = null
     private var player: MediaPlayer? = null
     private var playback: File? = null
@@ -67,8 +66,6 @@ internal class NearbyPanel(
     override fun pause() {
         dialog?.dismiss()
         microphone = null
-        liveHold?.stop(cancel = true)
-        liveHold = null
         discard()
         stopPlayer()
     }
@@ -78,8 +75,9 @@ internal class NearbyPanel(
         if (code == MICROPHONE_PERMISSION) {
             val start = microphone
             microphone = null
-            if (activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+            if (activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 start?.invoke()
+            }
         }
     }
 
@@ -116,71 +114,25 @@ internal class NearbyPanel(
 
     override fun startHold(feedback: TextView) {
         val active = activeScope ?: return
-        val session = NearbyService.session.value?.takeIf { NearbyService.activeScope == active.nearbyScopeKey }
-        if (session == null && !gateway.isSessionReady(active)) {
+        if (!gateway.isSessionReady(active)) {
             feedback.text = gateway.unavailableReason()
             return
         }
-        if (session != null) {
-            val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
-                else Manifest.permission.ACCESS_FINE_LOCATION
-            if (activity.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) &&
-                activity.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
-                activity.requestPermissions(arrayOf(permission), RADIO_PERMISSION)
-                return
-            }
-            if (!session.voiceEnabled) {
-                feedback.text = "当前频道语音未启用，可发送附近文字"
-                return
-            }
+        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
+            else Manifest.permission.ACCESS_FINE_LOCATION
+        if (activity.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) &&
+            activity.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED
+        ) {
+            activity.requestPermissions(arrayOf(permission), RADIO_PERMISSION)
+            return
         }
-        if (hasMicrophone()) beginVoice(active, feedback)
+        if (hasMicrophone()) beginRecording(active, feedback)
         else requestMicrophone { feedback.text = "已允许麦克风，按住说话，松开发送" }
     }
 
     override fun stopHold(feedback: TextView, cancel: Boolean) {
-        val live = liveHold
-        if (live != null) {
-            liveHold = null
-            live.stop(cancel)
-            if (!cancel) feedback.text = "正在保存语音留言…"
-            else feedback.text = ""
-            return
-        }
         if (cancel) discard()
         else activeScope?.let { finishRecording(it, feedback) }
-    }
-
-    private fun beginVoice(active: CommScope, feedback: TextView) {
-        val controller = NearbyService.liveVoice
-        if (controller != null && gateway.networkState.value.liveVoicePeerCount > 0) {
-            stopPlayer()
-            val started = controller.start { audio ->
-                jobs.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        gateway.send(
-                            CommOutboundMessage(
-                                scope = active,
-                                kind = CommEnvelopeKind.VOICE_NOTE,
-                                audioBytes = audio,
-                            ),
-                        )
-                    }
-                    if (activeScope == active) feedback.text = if (result !is CommSendResult.Rejected)
-                        "语音留言已保存" else "语音留言未保存，请重试"
-                }
-            }
-            if (started) {
-                liveHold = controller
-                feedback.text = "附近实时对讲 · 松开结束"
-                return
-            }
-            if (controller.receiving || controller.transmitting) {
-                feedback.text = "当前有组员发言，请稍后再试"
-                return
-            }
-        }
-        beginRecording(active, feedback)
     }
 
     private fun hasMicrophone() = activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -245,7 +197,7 @@ internal class NearbyPanel(
                     file.delete()
                 }
             }
-            feedback.text = if (result !is CommSendResult.Rejected) "语音已保存 · 等待 Wi-Fi Aware 送达" else "暂时无法保存语音"
+            feedback.text = if (result !is CommSendResult.Rejected) "语音已保存 · 等待 RNS 链路送达" else "暂时无法保存语音"
         }
     }
 

@@ -3,23 +3,15 @@ package com.mandonothing.ops.comm
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
-import com.mandonothing.ops.NEARBY_PRIVATE_ENVELOPE_LIMIT
 import com.mandonothing.ops.NearbyConfig
-import com.mandonothing.ops.NearbyDelivery
-import com.mandonothing.ops.NearbyDiagnosticSnapshot
-import com.mandonothing.ops.NearbyIdentity
-import com.mandonothing.ops.NearbyMessage
-import com.mandonothing.ops.NearbyMessages
-import com.mandonothing.ops.NearbyPrivate
-import com.mandonothing.ops.NearbyPrivateContent
-import com.mandonothing.ops.NearbyPrivateIdentity
-import com.mandonothing.ops.NearbyRadio
-import com.mandonothing.ops.NearbyService
+import com.mandonothing.ops.NearbyProvisioningIdentity
 import com.mandonothing.ops.NearbySettings
 import com.mandonothing.ops.comm.aware.RnsRadioKind
+import com.mandonothing.ops.comm.network.RnsManagedRoute
 import com.mandonothing.ops.comm.network.RnsNetworkInputs
 import com.mandonothing.ops.comm.network.RnsNetworkManager
 import com.mandonothing.ops.comm.network.RnsTopologyDiagnostics
+import com.mandonothing.ops.comm.rns.LxmfDeliveryStatus
 import com.mandonothing.ops.comm.rns.RnsCredentialLeaseSync
 import com.mandonothing.ops.comm.rns.RnsLocalStore
 import com.mandonothing.ops.comm.rns.RnsLxmfTransportAdapter
@@ -36,217 +28,16 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.util.UUID
-
-/** Pure mapping helpers between Nearby Mesh internals and RNS-02 envelopes/state. */
-internal object NearbyCommMapper {
-    fun toTransportKind(radio: NearbyRadio): CommTransportKind = when (radio) {
-        NearbyRadio.WIFI -> CommTransportKind.WIFI_AWARE
-        NearbyRadio.BLE -> CommTransportKind.BLE_L2CAP
-    }
-
-    fun toDeliveryState(delivery: NearbyDelivery, synced: Boolean): CommDeliveryState = when (delivery) {
-        NearbyDelivery.WAITING -> CommDeliveryState.QUEUED
-        NearbyDelivery.AWAITING_RECEIPT -> CommDeliveryState.AWAITING_RECEIPT
-        NearbyDelivery.DELIVERED -> if (synced) CommDeliveryState.SYNCED else CommDeliveryState.DELIVERED
-        NearbyDelivery.EXPIRED -> CommDeliveryState.EXPIRED
-    }
-
-    fun toNetworkState(
-        radios: Map<NearbyRadio, String>,
-        diagnostics: NearbyDiagnosticSnapshot,
-        credential: NearbyConfig?,
-        activeScopeKey: String?,
-        hasInternet: Boolean = false,
-        validatedInternet: Boolean = false,
-        serverReachable: Boolean = false,
-    ): CommNetworkState {
-        val wifiStatusLabel = radios[NearbyRadio.WIFI] ?: "未启用"
-        val bleStatusLabel = radios[NearbyRadio.BLE] ?: "未启用"
-        val wifiReachability = reachabilityFor(wifiStatusLabel, diagnostics.wifiPeers)
-        val bleReachability = reachabilityFor(bleStatusLabel, diagnostics.bluetoothPeers)
-        val lastKind = diagnostics.lastDeliveryRoute?.let(::toTransportKind)
-        val links = buildMap {
-            put(
-                CommTransportKind.WIFI_AWARE,
-                CommLinkStatus(
-                    kind = CommTransportKind.WIFI_AWARE,
-                    reachability = wifiReachability,
-                    statusLabel = wifiStatusLabel,
-                    peerCount = diagnostics.wifiPeers,
-                    liveVoicePeerCount = diagnostics.liveVoicePeers,
-                    lastActivityMs = diagnostics.lastActivityMillis,
-                    lastDeliveryMs = diagnostics.lastDeliveryMillis,
-                    lastDeliveryKind = lastKind,
-                ),
-            )
-            put(
-                CommTransportKind.BLE_L2CAP,
-                CommLinkStatus(
-                    kind = CommTransportKind.BLE_L2CAP,
-                    reachability = bleReachability,
-                    statusLabel = bleStatusLabel,
-                    peerCount = diagnostics.bluetoothPeers,
-                    lastActivityMs = diagnostics.lastActivityMillis,
-                    lastDeliveryMs = diagnostics.lastDeliveryMillis,
-                    lastDeliveryKind = lastKind,
-                ),
-            )
-            if (hasInternet || serverReachable) {
-                put(
-                    CommTransportKind.INTERNET_HTTP,
-                    CommLinkStatus(
-                        kind = CommTransportKind.INTERNET_HTTP,
-                        reachability = if (serverReachable) CommReachability.CONNECTED else CommReachability.DEGRADED,
-                        statusLabel = if (serverReachable) "在线" else "仅本地网络",
-                    ),
-                )
-            }
-        }
-        return CommNetworkState(
-            hasInternet = hasInternet,
-            validatedInternet = validatedInternet,
-            serverReachable = serverReachable,
-            nearbyActive = credential != null && activeScopeKey != null,
-            nearbyVoiceSupported = credential?.voiceEnabled == true && diagnostics.liveVoicePeers > 0,
-            nearbyScopeKey = activeScopeKey,
-            links = links,
-            bestRoute = CommRouterPolicy.selectBestRoute(links, serverReachable),
-            reachablePeerCount = diagnostics.reachablePeers,
-            liveVoicePeerCount = diagnostics.liveVoicePeers,
-            lastDeliveryMs = diagnostics.lastDeliveryMillis,
-            lastDeliveryKind = lastKind,
-        )
-    }
-
-    private fun reachabilityFor(label: String, peerCount: Int): CommReachability = when {
-        peerCount > 0 || label == "已连接" -> CommReachability.CONNECTED
-        label == "正在发现" -> CommReachability.DISCOVERING
-        else -> CommReachability.UNAVAILABLE
-    }
-
-    fun toEnvelope(
-        message: NearbyMessage,
-        scope: CommScope,
-        localSender: String,
-        localActor: String,
-        receipts: List<NearbyMessage>,
-        privateContent: NearbyPrivateContent?,
-    ): CommMessageEnvelope {
-        val mine = message.sender == localSender
-        val kind = when {
-            message.isPrivate -> CommEnvelopeKind.PRIVATE_ENCRYPTED
-            message.assistance -> CommEnvelopeKind.ASSISTANCE_ALERT
-            message.audio.isNotEmpty() -> CommEnvelopeKind.VOICE_NOTE
-            message.confirmationFor.isNotEmpty() -> CommEnvelopeKind.CONTROL_ACK
-            message.receiptFor.isNotEmpty() -> CommEnvelopeKind.DELIVERY_RECEIPT
-            else -> CommEnvelopeKind.CHANNEL_TEXT
-        }
-        val routeKind = (if (message.received || !mine) message.deliveredVia else message.attemptedVia)
-            ?.let(::toTransportKind)
-        return CommMessageEnvelope(
-            id = message.id,
-            scope = scope,
-            kind = kind,
-            senderId = message.sender,
-            senderName = message.name,
-            recipientId = message.recipient,
-            text = privateContent?.text ?: message.text,
-            audioBase64 = message.audio,
-            photoBase64 = privateContent?.photo?.let(java.util.Base64.getEncoder()::encodeToString),
-            assistance = message.assistance,
-            isPrivate = message.isPrivate,
-            isMine = mine,
-            createdAtMs = message.time,
-            deliveryState = toDeliveryState(message.delivery, message.synced),
-            syncedToServer = message.synced,
-            needsReadReceipt = message.confirmationRequired,
-            readByMe = receipts.any { it.actor == localActor },
-            readByNames = receipts.map { it.name }.distinct(),
-            route = CommRouteMetadata(
-                attemptedTransport = message.attemptedVia?.let(::toTransportKind),
-                deliveredTransport = message.deliveredVia?.let(::toTransportKind),
-                idempotencyKey = message.id,
-            ).let { meta ->
-                if (routeKind != null && meta.deliveredTransport == null && meta.attemptedTransport == null) {
-                    meta.copy(attemptedTransport = routeKind)
-                } else meta
-            },
-        )
-    }
-}
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Wraps NearbyMessages / NearbyPrivate behind CommTransportAdapter for Wi-Fi Aware & BLE L2CAP.
- * RNS-04 (Wi-Fi Aware Adapter) and RNS-03/06 (RNS Mesh) can register alongside or replace this adapter.
- */
-internal class NearbyTransportAdapter(
-    override val kind: CommTransportKind,
-    private val linkStateProvider: () -> StateFlow<CommLinkStatus>,
-    private val sessionProvider: () -> NearbyMessages?,
-    private val configProvider: () -> NearbyConfig?,
-) : CommTransportAdapter {
-    override val linkStatus: StateFlow<CommLinkStatus>
-        get() = linkStateProvider()
-
-    override fun supports(outbound: CommOutboundMessage): Boolean {
-        if (!kind.supportsBulkMedia && outbound.requiresBulkMediaTransport) return false
-        return outbound.kind in setOf(
-            CommEnvelopeKind.CHANNEL_TEXT,
-            CommEnvelopeKind.PRIVATE_ENCRYPTED,
-            CommEnvelopeKind.ASSISTANCE_ALERT,
-            CommEnvelopeKind.VOICE_NOTE,
-        )
-    }
-
-    override suspend fun send(outbound: CommOutboundMessage): CommSendResult = sendSync(outbound)
-
-    fun sendSync(outbound: CommOutboundMessage): CommSendResult {
-        val session = sessionProvider()
-            ?: return CommSendResult.Rejected("附近通信会话未就绪", retryable = true)
-        return try {
-            val id = outbound.id.ifBlank { UUID.randomUUID().toString() }
-            if (outbound.recipientActor.isNotEmpty() || outbound.photoBytes != null) {
-                val config = configProvider()
-                    ?: return CommSendResult.Rejected("当前频道离线凭证不可用", retryable = true)
-                val recipient = config.recipients.firstOrNull { it.actor == outbound.recipientActor }
-                    ?: return CommSendResult.Rejected("收件人离线密钥待同步", retryable = true)
-                val envelope = NearbyPrivate.seal(config, recipient, id, outbound.text, outbound.photoBytes)
-                require(envelope.length <= NEARBY_PRIVATE_ENVELOPE_LIMIT)
-                session.send("", id = id, recipient = outbound.recipientActor, sealedPayload = envelope)
-            } else {
-                session.send(
-                    text = outbound.text,
-                    audio = outbound.audioBytes,
-                    assistance = outbound.assistance,
-                    id = id,
-                )
-            }
-            val activeLink = linkStatus.value.reachability
-            if (activeLink == CommReachability.CONNECTED) {
-                CommSendResult.Accepted(id, kind)
-            } else {
-                CommSendResult.Queued(id, "等待附近设备可达")
-            }
-        } catch (error: Exception) {
-            CommSendResult.Rejected(error.message ?: "暂时无法保存，请重试", retryable = true)
-        }
-    }
-
-    override suspend fun acknowledgeRead(scope: CommScope, messageId: String): Boolean {
-        val session = sessionProvider() ?: return false
-        return session.markRead(messageId)
-    }
-}
-
-/**
- * Default implementation of [CommGateway] wrapping NearbyService, NearbyMessages,
- * NearbySettings, and NearbyPrivate without altering on-wire protocols or storage.
+ * Default implementation of [CommGateway] backed purely by RNS / LXMF ([RnsLxmfTransportAdapter],
+ * [RnsRuntimeService], [RnsNetworkManager], [RnsTopologyDiagnostics]) and Ops `/nearby` leases
+ * ([NearbySettings], [RnsCredentialLeaseSync]).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class DefaultCommGateway(
@@ -254,7 +45,7 @@ internal class DefaultCommGateway(
     private val scope: CoroutineScope,
     observeNearby: Boolean = context != null,
 ) : CommGateway {
-    private val settings by lazy { NearbySettings(requireNotNull(context)) }
+    private val settings by lazy { context?.let(::NearbySettings) }
     private val rnsStore by lazy { context?.let(::RnsLocalStore) }
     private val topologyDiagnostics: RnsTopologyDiagnostics =
         if (observeNearby) RnsRuntimeService.topologyDiagnostics else RnsTopologyDiagnostics()
@@ -264,22 +55,19 @@ internal class DefaultCommGateway(
     private val mutableMessages = MutableStateFlow<List<CommMessageEnvelope>>(emptyList())
     private val mutableEvents = MutableSharedFlow<CommEventEnvelope>(extraBufferCapacity = 32)
     private val mutableServerNearby = MutableStateFlow(true)
-    private val wifiLinkStatus = MutableStateFlow(
-        CommLinkStatus(CommTransportKind.WIFI_AWARE, CommReachability.UNAVAILABLE, "未启用"),
-    )
-    private val bleLinkStatus = MutableStateFlow(
-        CommLinkStatus(CommTransportKind.BLE_L2CAP, CommReachability.UNAVAILABLE, "未启用"),
-    )
+    private val receiveMutedChannels = ConcurrentHashMap<String, Boolean>()
     private var activeScope: CommScope? = null
-    private var privateReader: Pair<String, NearbyPrivateIdentity>? = null
-    private val privateContentCache = LinkedHashMap<String, NearbyPrivateContent>()
+    private var cachedCredential: NearbyConfig? = null
+    private var uiActive: Boolean = false
     private var lastEmittedIds = emptySet<String>()
     private val rnsAdapter: RnsLxmfTransportAdapter? = if (observeNearby) {
         RnsLxmfTransportAdapter(
             scope = scope,
             coordinatorProvider = { RnsRuntimeService.activeCoordinator },
         )
-    } else null
+    } else {
+        null
+    }
 
     override val networkState: StateFlow<CommNetworkState> = mutableNetworkState.asStateFlow()
     override val messages: StateFlow<List<CommMessageEnvelope>> = mutableMessages.asStateFlow()
@@ -287,24 +75,8 @@ internal class DefaultCommGateway(
     override val serverSupportsNearby: StateFlow<Boolean> = mutableServerNearby.asStateFlow()
 
     init {
-        registerAdapter(
-            NearbyTransportAdapter(
-                kind = CommTransportKind.WIFI_AWARE,
-                linkStateProvider = { wifiLinkStatus },
-                sessionProvider = { currentNearbySession(activeScope) },
-                configProvider = { currentCredential(activeScope) },
-            ),
-        )
-        registerAdapter(
-            NearbyTransportAdapter(
-                kind = CommTransportKind.BLE_L2CAP,
-                linkStateProvider = { bleLinkStatus },
-                sessionProvider = { currentNearbySession(activeScope) },
-                configProvider = { currentCredential(activeScope) },
-            ),
-        )
         rnsAdapter?.let(::registerAdapter)
-        if (observeNearby) observeNearbyService()
+        if (observeNearby) observeRnsRuntime()
     }
 
     override fun registerAdapter(adapter: CommTransportAdapter) {
@@ -312,33 +84,23 @@ internal class DefaultCommGateway(
         publishNetworkAndMessages()
     }
 
-    private fun observeNearbyService() {
+    private fun observeRnsRuntime() {
         scope.launch {
-            launch { NearbyService.radios.collect { publishNetworkAndMessages() } }
-            launch { NearbyService.channelCredential.collect { publishNetworkAndMessages() } }
-            launch { NearbyService.diagnostics.collect { publishNetworkAndMessages() } }
             launch { RnsRuntimeService.awareNetworkState.collect { publishNetworkAndMessages() } }
             launch { RnsRuntimeService.awareDiagnostics.collect { publishNetworkAndMessages() } }
+            launch { RnsRuntimeService.snapshot.collect { publishNetworkAndMessages() } }
             launch { topologyDiagnostics.snapshot.collect { publishNetworkAndMessages() } }
             rnsAdapter?.let { rns ->
                 launch { rns.linkStatus.collect { publishNetworkAndMessages() } }
                 launch { rns.messages.collect { publishNetworkAndMessages() } }
                 launch { rns.events.collect { mutableEvents.tryEmit(it) } }
             }
-            NearbyService.session.collectLatest { session ->
-                if (session == null) {
-                    lastEmittedIds = emptySet()
-                    publishNetworkAndMessages()
-                } else {
-                    session.messages.collect { publishNetworkAndMessages() }
-                }
-            }
         }
     }
 
     override fun selectScope(scope: CommScope?) {
         if (scope?.nearbyScopeKey != activeScope?.nearbyScopeKey) {
-            privateContentCache.clear()
+            cachedCredential = null
             lastEmittedIds = emptySet()
         }
         activeScope = scope
@@ -347,7 +109,10 @@ internal class DefaultCommGateway(
     }
 
     override fun setUiActive(active: Boolean) {
-        NearbyService.uiActive = active
+        uiActive = active
+        if (active) {
+            RnsRuntimeService.activeIntegration?.pollMultiHopTelemetry()
+        }
     }
 
     override fun setServerNearbySupported(supported: Boolean) {
@@ -366,18 +131,15 @@ internal class DefaultCommGateway(
         val appContext = context ?: return
         val current = activeScope
         val config = current?.takeIf { it.channelKind == "group" && it.nearbyScopeKey.isNotEmpty() }?.let {
-            settings.read(it.accountKey, it.eventId, it.channelId, it.channelName)
+            settings?.read(it.accountKey, it.eventId, it.channelId, it.channelName)
         }
+        cachedCredential = config
         if (config == null || Build.VERSION.SDK_INT < 29) {
-            if (NearbyService.activeScope != null) NearbyService.stop(appContext)
             if (current == null && RnsRuntimeService.activeCoordinator != null) {
                 RnsRuntimeService.stop(appContext)
             }
             publishNetworkAndMessages()
             return
-        }
-        if (forceRestart || NearbyService.activeScope != config.scope) {
-            NearbyService.start(appContext, config)
         }
         if (forceRestart || RnsRuntimeService.activeCoordinator == null) {
             val ifacLease = rnsStore?.loadIfacLease(config.event, config.channel)?.takeIf { it.isLive() }
@@ -399,8 +161,7 @@ internal class DefaultCommGateway(
         publishNetworkAndMessages()
     }
 
-    override fun isSessionReady(scope: CommScope?): Boolean =
-        currentNearbySession(scope) != null || rnsAdapter?.isReadyFor(scope) == true
+    override fun isSessionReady(scope: CommScope?): Boolean = rnsAdapter?.isReadyFor(scope) == true
 
     override fun unavailableReason(): String = when {
         Build.VERSION.SDK_INT < 29 -> "离线通信需要 Android 10 或更新版本"
@@ -416,8 +177,12 @@ internal class DefaultCommGateway(
             .map { CommRecipient(actorId = it.actor, displayName = it.name) }
     }
 
-    override fun hasDirectedEncryptionKey(scope: CommScope?): Boolean =
-        currentCredential(scope)?.ownAgreementKey != null
+    override fun hasDirectedEncryptionKey(scope: CommScope?): Boolean {
+        val cred = currentCredential(scope)
+        if (cred?.ownAgreementKey != null) return true
+        if (scope == null) return false
+        return rnsStore?.loadIdentityBinding(scope.accountKey, scope.eventId) != null
+    }
 
     override fun send(outbound: CommOutboundMessage): CommSendResult {
         val currentState = mutableNetworkState.value.let { state ->
@@ -438,22 +203,14 @@ internal class DefaultCommGateway(
         for (kind in ordered) {
             val adapter = adapters[kind] ?: continue
             if (!adapter.supports(outbound)) continue
-            val result = if (adapter is NearbyTransportAdapter) {
-                adapter.sendSync(outbound)
-            } else {
-                runBlocking { adapter.send(outbound) }
-            }
+            val result = runBlocking { adapter.send(outbound) }
             if (result is CommSendResult.Rejected && result.retryable) {
                 lastRejection = result
                 val managed = when (kind) {
-                    CommTransportKind.INTERNET_HTTP, CommTransportKind.LIVEKIT_MEDIA ->
-                        com.mandonothing.ops.comm.network.RnsManagedRoute.WAN_HTTP
-                    CommTransportKind.WIFI_AWARE ->
-                        com.mandonothing.ops.comm.network.RnsManagedRoute.RNS_WIFI_AWARE
-                    CommTransportKind.BLE_L2CAP ->
-                        com.mandonothing.ops.comm.network.RnsManagedRoute.RNS_BLE_L2CAP
-                    CommTransportKind.RNS_MESH ->
-                        com.mandonothing.ops.comm.network.RnsManagedRoute.LAN_RNS
+                    CommTransportKind.INTERNET_HTTP, CommTransportKind.LIVEKIT_MEDIA -> RnsManagedRoute.WAN_HTTP
+                    CommTransportKind.WIFI_AWARE -> RnsManagedRoute.RNS_WIFI_AWARE
+                    CommTransportKind.BLE_L2CAP -> RnsManagedRoute.RNS_BLE_L2CAP
+                    CommTransportKind.RNS_MESH -> RnsManagedRoute.LAN_RNS
                 }
                 networkManager.reportRouteFailure(managed)
                 continue
@@ -463,19 +220,16 @@ internal class DefaultCommGateway(
         return lastRejection ?: CommSendResult.Rejected("离线通信暂不可用", retryable = true)
     }
 
-    override suspend fun markRead(scope: CommScope, messageId: String): Boolean {
-        val nearbyAck = currentNearbySession(scope)?.markRead(messageId) == true
-        val rnsAck = rnsAdapter?.acknowledgeRead(scope, messageId) == true
-        return nearbyAck || rnsAck
-    }
+    override suspend fun markRead(scope: CommScope, messageId: String): Boolean =
+        rnsAdapter?.acknowledgeRead(scope, messageId) == true
 
     override fun markAssistanceSynced(scope: CommScope, messageId: String) {
-        currentNearbySession(scope)?.syncAssistance(messageId)
         rnsAdapter?.markSyncedToServer(messageId)
     }
 
     override fun provisionCredentials(accountKey: String, eventId: String, leases: JSONObject) {
-        settings.save(accountKey, eventId, leases)
+        cachedCredential = null
+        settings?.save(accountKey, eventId, leases)
         val store = rnsStore ?: return
         RnsCredentialLeaseSync.applyNearbyCredentials(
             eventId = eventId,
@@ -483,16 +237,17 @@ internal class DefaultCommGateway(
             store = store,
             coordinator = RnsRuntimeService.activeCoordinator,
         )
+        publishNetworkAndMessages()
     }
 
     override fun clearCredentials(accountKey: String, eventId: String) {
         if (activeScope?.accountKey == accountKey && activeScope?.eventId == eventId) {
-            privateReader = null
-            privateContentCache.clear()
+            cachedCredential = null
         }
-        settings.clear(accountKey, eventId)
+        settings?.clear(accountKey, eventId)
         rnsStore?.clearIfacLeases(eventId)
         rnsStore?.clearIdentityBinding(accountKey, eventId)
+        publishNetworkAndMessages()
     }
 
     override fun rnsIdentityPayload(accountKey: String, eventId: String): JSONObject? {
@@ -554,7 +309,7 @@ internal class DefaultCommGateway(
             ),
             scope = scope,
         ) ?: return false
-        return state.status != com.mandonothing.ops.comm.rns.LxmfDeliveryStatus.FAILED
+        return state.status != LxmfDeliveryStatus.FAILED
     }
 
     override fun markEnvelopeSynced(envelopeId: String) {
@@ -568,13 +323,11 @@ internal class DefaultCommGateway(
     override fun rnsTopologyDiagnostics(): RnsTopologyDiagnostics = topologyDiagnostics
 
     override suspend fun localIdentityKeys(accountKey: String): Pair<String, String?> = withContext(Dispatchers.IO) {
-        val signing = NearbyIdentity(accountKey).publicKey
-        val agreement = context?.let { runCatching { NearbyPrivateIdentity(it, accountKey).publicKey }.getOrNull() }
-        signing to agreement
+        NearbyProvisioningIdentity(accountKey).publicKey to null
     }
 
     override fun setReceiveMuted(channelId: String, muted: Boolean) {
-        NearbyService.setReceiveMuted(channelId, muted)
+        receiveMutedChannels[channelId] = muted
     }
 
     override fun decodePrivatePhoto(bytes: ByteArray): Bitmap? = decodeNearbyPhoto(bytes)
@@ -583,7 +336,6 @@ internal class DefaultCommGateway(
         val state = mutableNetworkState.value
         val wifi = state.links[CommTransportKind.WIFI_AWARE]
         val ble = state.links[CommTransportKind.BLE_L2CAP]
-        val live = NearbyService.liveVoice
         val delivered = if (state.lastDeliveryMs == 0L) "尚无送达回执" else timeFormatter(state.lastDeliveryMs)
         val topo = topologyDiagnostics.snapshot.value
         val netMgrState = networkManager.state.value
@@ -598,11 +350,6 @@ internal class DefaultCommGateway(
             }
             append("最近送达  $delivered")
             state.lastDeliveryKind?.let { append(" · ${it.displayName}") }
-            if (state.liveVoicePeerCount > 0 || live?.transmitting == true) {
-                appendLine()
-                if (live?.transmitting == true) append("正在附近发言")
-                else append("支持附近实时语音  ${state.liveVoicePeerCount} 人")
-            }
         }
     }
 
@@ -623,53 +370,57 @@ internal class DefaultCommGateway(
         serverReachable: Boolean = mutableNetworkState.value.serverReachable,
     ) {
         val currentScope = activeScope
-        val nextNetwork = NearbyCommMapper.toNetworkState(
-            radios = NearbyService.radios.value,
-            diagnostics = NearbyService.diagnostics.value,
-            credential = currentCredential(currentScope),
-            activeScopeKey = NearbyService.activeScope,
-            hasInternet = hasInternet,
-            validatedInternet = validatedInternet,
-            serverReachable = serverReachable,
-        )
-        val rnsLink = adapters[CommTransportKind.RNS_MESH]?.linkStatus?.value ?: rnsAdapter?.linkStatus?.value
+        val cred = currentCredential(currentScope)
         val awareLinks = RnsRuntimeService.awareNetworkState.value.links
-        val mergedBaseLinks = nextNetwork.links.toMutableMap()
+        val mergedLinks = linkedMapOf<CommTransportKind, CommLinkStatus>()
+        mergedLinks[CommTransportKind.WIFI_AWARE] = awareLinks[CommTransportKind.WIFI_AWARE]
+            ?: CommLinkStatus(CommTransportKind.WIFI_AWARE, CommReachability.UNAVAILABLE, "未启用")
+        mergedLinks[CommTransportKind.BLE_L2CAP] = awareLinks[CommTransportKind.BLE_L2CAP]
+            ?: CommLinkStatus(CommTransportKind.BLE_L2CAP, CommReachability.UNAVAILABLE, "未启用")
+
         adapters.values.forEach { adapter ->
-            if (adapter !is NearbyTransportAdapter && adapter.kind != CommTransportKind.RNS_MESH) {
+            if (adapter.kind != CommTransportKind.RNS_MESH) {
                 val customStatus = adapter.linkStatus.value
-                val current = mergedBaseLinks[adapter.kind]
-                if (current == null || customStatus.reachability == CommReachability.CONNECTED &&
-                    (current.reachability != CommReachability.CONNECTED || customStatus.peerCount > current.peerCount)
+                val current = mergedLinks[adapter.kind]
+                if (current == null || (customStatus.reachability == CommReachability.CONNECTED &&
+                        (current.reachability != CommReachability.CONNECTED || customStatus.peerCount > current.peerCount))
                 ) {
-                    mergedBaseLinks[adapter.kind] = customStatus
+                    mergedLinks[adapter.kind] = customStatus
                 }
             }
         }
-        awareLinks[CommTransportKind.WIFI_AWARE]?.let { awareWifi ->
-            val currentWifi = mergedBaseLinks[CommTransportKind.WIFI_AWARE]
-            if (currentWifi == null || awareWifi.peerCount > currentWifi.peerCount ||
-                currentWifi.reachability == CommReachability.UNAVAILABLE
-            ) {
-                mergedBaseLinks[CommTransportKind.WIFI_AWARE] = awareWifi
-            }
+        if (hasInternet || serverReachable) {
+            mergedLinks[CommTransportKind.INTERNET_HTTP] = CommLinkStatus(
+                kind = CommTransportKind.INTERNET_HTTP,
+                reachability = if (serverReachable) CommReachability.CONNECTED else CommReachability.DEGRADED,
+                statusLabel = if (serverReachable) "在线" else "仅本地网络",
+            )
         }
-        awareLinks[CommTransportKind.BLE_L2CAP]?.let { awareBle ->
-            val currentBle = mergedBaseLinks[CommTransportKind.BLE_L2CAP]
-            if (currentBle == null || awareBle.peerCount > currentBle.peerCount ||
-                currentBle.reachability == CommReachability.UNAVAILABLE
-            ) {
-                mergedBaseLinks[CommTransportKind.BLE_L2CAP] = awareBle
-            }
-        }
+        val rnsLink = adapters[CommTransportKind.RNS_MESH]?.linkStatus?.value ?: rnsAdapter?.linkStatus?.value
         if (rnsLink != null && rnsLink.reachability != CommReachability.UNAVAILABLE) {
-            mergedBaseLinks[CommTransportKind.RNS_MESH] = topologyDiagnostics.toRnsMeshLinkStatus(rnsLink)
+            mergedLinks[CommTransportKind.RNS_MESH] = topologyDiagnostics.toRnsMeshLinkStatus(rnsLink)
         }
-        val baseWithRadios = nextNetwork.copy(
-            links = mergedBaseLinks,
-            bestRoute = CommRouterPolicy.selectBestRoute(mergedBaseLinks, serverReachable),
+
+        val rnsEnvelopes = rnsAdapter?.messages?.value.orEmpty().sortedBy { it.createdAtMs }
+        val lastDelivery = rnsEnvelopes.filter { it.deliveryState == CommDeliveryState.DELIVERED || it.deliveryState == CommDeliveryState.SYNCED }
+            .maxByOrNull { it.createdAtMs }
+        val awarePeerCount = mergedLinks.values
+            .filter { it.kind == CommTransportKind.WIFI_AWARE || it.kind == CommTransportKind.BLE_L2CAP }
+            .sumOf { it.peerCount }
+        val baseNetwork = CommNetworkState(
+            hasInternet = hasInternet,
+            validatedInternet = validatedInternet,
+            serverReachable = serverReachable,
+            nearbyActive = cred != null && currentScope != null,
+            nearbyVoiceSupported = cred?.voiceEnabled == true && topologyDiagnostics.snapshot.value.reachableDestinations > 0,
+            nearbyScopeKey = currentScope?.nearbyScopeKey,
+            links = mergedLinks,
+            bestRoute = CommRouterPolicy.selectBestRoute(mergedLinks, serverReachable),
+            reachablePeerCount = awarePeerCount,
+            lastDeliveryMs = lastDelivery?.createdAtMs ?: 0L,
+            lastDeliveryKind = lastDelivery?.route?.deliveredTransport ?: lastDelivery?.route?.attemptedTransport,
         )
-        val topoApplied = topologyDiagnostics.applyToNetworkState(baseWithRadios)
+        val topoApplied = topologyDiagnostics.applyToNetworkState(baseNetwork)
         evaluateNetworkManager(topoApplied)
         val mergedNetwork = topoApplied.copy(
             bestRoute = networkManager.state.value.selectedRoute?.transportKind ?: topoApplied.bestRoute,
@@ -678,46 +429,18 @@ internal class DefaultCommGateway(
                 networkManager.state.value.networkState.reachablePeerCount,
             ),
         )
-        mergedNetwork.links[CommTransportKind.WIFI_AWARE]?.let { wifiLinkStatus.value = it }
-        mergedNetwork.links[CommTransportKind.BLE_L2CAP]?.let { bleLinkStatus.value = it }
         if (mergedNetwork != mutableNetworkState.value) {
             mutableNetworkState.value = mergedNetwork
             mutableEvents.tryEmit(CommEventEnvelope.NetworkChanged(mergedNetwork))
         }
 
-        val session = currentNearbySession(currentScope)
-        val rnsEnvelopes = rnsAdapter?.messages?.value.orEmpty()
-        if (currentScope == null || (session == null && rnsEnvelopes.isEmpty())) {
+        if (currentScope == null || rnsEnvelopes.isEmpty()) {
             if (mutableMessages.value.isNotEmpty()) mutableMessages.value = emptyList()
             return
         }
-        val nearbyEnvelopes = if (session != null) {
-            val entries = session.messages.value
-            entries.asSequence()
-                .filterNot { it.isControl }
-                .filter { !it.isPrivate || it.sender == session.sender || session.isPrivateAddressedToMe(it) }
-                .toList()
-                .takeLast(24)
-                .mapNotNull { message ->
-                    val privateBody = if (message.isPrivate) {
-                        readPrivateMessage(currentScope, message) ?: return@mapNotNull null
-                    } else {
-                        null
-                    }
-                    NearbyCommMapper.toEnvelope(
-                        message = message,
-                        scope = currentScope,
-                        localSender = session.sender,
-                        localActor = session.actor,
-                        receipts = session.readReceipts(message.id),
-                        privateContent = privateBody,
-                    )
-                }
-        } else emptyList()
-        val envelopes = (nearbyEnvelopes + rnsEnvelopes).distinctBy { it.id }.sortedBy { it.createdAtMs }
-        mutableMessages.value = envelopes
-        val newIds = envelopes.mapTo(mutableSetOf()) { it.id }
-        envelopes.filter { it.id !in lastEmittedIds && !it.isMine }.forEach {
+        mutableMessages.value = rnsEnvelopes
+        val newIds = rnsEnvelopes.mapTo(mutableSetOf()) { it.id }
+        rnsEnvelopes.filter { it.id !in lastEmittedIds && !it.isMine }.forEach {
             mutableEvents.tryEmit(CommEventEnvelope.MessageReceived(it))
         }
         lastEmittedIds = newIds
@@ -745,31 +468,10 @@ internal class DefaultCommGateway(
         )
     }
 
-    private fun currentNearbySession(scope: CommScope?): NearbyMessages? {
-        val key = scope?.nearbyScopeKey?.takeIf { it.isNotEmpty() } ?: return null
-        return NearbyService.session.value?.takeIf { NearbyService.activeScope == key }
-    }
-
     private fun currentCredential(scope: CommScope?): NearbyConfig? {
-        val key = scope?.nearbyScopeKey?.takeIf { it.isNotEmpty() } ?: return null
-        return NearbyService.channelCredential.value?.takeIf { it.scope == key && it.live() }
-    }
-
-    private fun readPrivateMessage(scope: CommScope, message: NearbyMessage): NearbyPrivateContent? {
-        val appContext = context ?: return null
-        val config = currentCredential(scope) ?: return null
-        val cacheKey = "${config.generation}|${message.id}"
-        privateContentCache[cacheKey]?.let { return it }
-        return runCatching {
-            val identity = privateReader?.takeIf { it.first == config.account }?.second
-                ?: NearbyPrivateIdentity(appContext, config.account).also { privateReader = config.account to it }
-            NearbyPrivate.open(config, identity, message.actor, message.recipient, message.id, message.sealedPayload)
-                ?.also {
-                    if (privateContentCache.size >= 28) {
-                        privateContentCache.remove(privateContentCache.keys.first())
-                    }
-                    privateContentCache[cacheKey] = it
-                }
-        }.getOrNull()
+        val s = scope?.takeIf { it.channelKind == "group" && it.nearbyScopeKey.isNotEmpty() } ?: return null
+        cachedCredential?.takeIf { it.scope == s.nearbyScopeKey && it.live() }?.let { return it }
+        return settings?.read(s.accountKey, s.eventId, s.channelId, s.channelName)
+            ?.also { cachedCredential = it }
     }
 }

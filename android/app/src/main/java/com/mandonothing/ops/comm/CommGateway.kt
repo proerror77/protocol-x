@@ -70,7 +70,7 @@ internal object CommRouterPolicy {
 
 /**
  * Unified communication gateway consumed by MainActivity and application services.
- * Decouples business/UI code from NearbyService, NearbyMessages, NearbyPrivate, and radio types.
+ * Decouples business/UI code from RNS, Wi-Fi Aware, BLE L2CAP, HTTP, and LiveKit internals.
  */
 internal interface CommGateway {
     val networkState: StateFlow<CommNetworkState>

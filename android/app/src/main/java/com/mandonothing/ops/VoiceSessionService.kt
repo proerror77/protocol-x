@@ -97,9 +97,7 @@ class VoiceSessionService : Service() {
     private var rnsPttFrames: SharedFlow<RnsCoreEvent.PttFrameReceived>? = null
     private var rnsPttFloorEvents: SharedFlow<RnsCoreEvent.PttFloorEvent>? = null
     internal var pttTransportFactory: ((VoiceWorkspace, Int) -> PttSessionTransport)? = null
-    internal var onReceiveMuteChanged: ((String, Boolean) -> Unit) = { channelId, muted ->
-        NearbyService.setReceiveMuted(channelId, muted)
-    }
+    internal var onReceiveMuteChanged: ((String, Boolean) -> Unit) = { _, _ -> }
     private var uiOwner: Any? = null
     private var tone: ToneGenerator? = null
     private val pttSpeech by lazy { PttSpeech(assets) }

@@ -32,7 +32,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Android Foreground Service owning the RNS / LXMF node lifecycle across Activity recreations
- * and service restarts (aligned with NearbyService / VoiceSessionService and Android 14/15 FGS rules).
+ * and service restarts (aligned with VoiceSessionService and Android 14/15 FGS rules).
  */
 class RnsRuntimeService : Service() {
     internal inner class LocalBinder : Binder() {
