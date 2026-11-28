@@ -1,16 +1,21 @@
 package com.mandonothing.ops
 
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
+import android.net.Uri
 import android.view.Gravity
 import android.view.View
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -67,6 +72,8 @@ internal class ArrivalCardView(
     private val countdown = label("", 25, true, Color.rgb(154, 235, 205))
     private val estimate = label("", 13, color = MUTED)
     private val facts = label("", 15)
+    private val maps = Button(context).apply { text = "Google Maps 路线" }
+    private val uber = Button(context)
     private var data = JSONObject()
     private var photoSignature: String? = null
     private val photoJobs = mutableListOf<Job>()
@@ -90,6 +97,8 @@ internal class ArrivalCardView(
         addView(countdown, item(12))
         addView(estimate, item(3))
         addView(facts, item(12))
+        addView(maps, item(8))
+        addView(uber, item(4))
     }
 
     fun bind(card: JSONObject) {
@@ -126,12 +135,32 @@ internal class ArrivalCardView(
                 add("香港机场更新  " + ArrivalCountdown.hkt(it))
             }
         }.joinToString("\n")
+        val links = card.optJSONObject("travel_links")
+        bindLink(maps, links?.value("google_directions"), "www.google.com")
+        uber.text = if (links?.optBoolean("uber_prefilled") == true) "在 Uber 核对路线及叫车"
+            else "打开 Uber · 手动填写地址"
+        bindLink(uber, links?.value("uber"), "m.uber.com")
         val signature = card.optJSONArray("players")?.toString().orEmpty() + "|" + card.optJSONObject("photos")?.toString().orEmpty()
         if (signature != photoSignature) {
             photoSignature = signature
             showPortraits(card)
         }
         updateCountdown()
+    }
+
+    private fun bindLink(button: Button, value: String?, host: String) {
+        val uri = value?.takeIf(String::isNotBlank)?.let(Uri::parse)
+            ?.takeIf { it.scheme == "https" && it.host == host && it.port == -1 && it.userInfo == null }
+        button.visibility = if (uri == null) View.GONE else View.VISIBLE
+        button.setOnClickListener {
+            if (uri != null) {
+                try {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                } catch (_: ActivityNotFoundException) {
+                    Toast.makeText(context, "找不到可打开链接的应用", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     private fun showPortraits(card: JSONObject) {

@@ -97,3 +97,19 @@ Android 在「更多 → 开启后台航班提醒」开启本班值守，与对�
   接收本端或经多跳中继的签名 `EnvelopeV1`（`task`、`message`、`attachment`、`location`、`delivery_receipt`），按 `(event_id, envelope_id)`、payload `fingerprint` 与业务层 `idempotency_key` 执行三层去重（0 重复行动）；版本冲突时返回带 `current_version`、`current_status`、`current_progress` 与 `allowed_actions` 的 `409` 结构化信息。
 - **RNS / TAK 网关（`POST /api/rns/v1/gateway/dispatch`、`GET /api/rns/v1/gateway/status`、`POST /api/events/{event_id}/tak/inbound`、`GET /api/events/{event_id}/tak/deliveries`）：**
   私有 IFAC Python `rns`/`lxmf` 网关双向桥接 RNS 现场网状节点、TOC 工作区与 OpenTAKServer CoT（支持回读确认、确定性 UID 去重与回流抑制）。
+
+### 香港到港动态与接待出行
+
+`GET /api/events/{event_id}/flight-arrivals/{flight}` 按航班号读取香港机场到港动态。可传 `service_date=YYYY-MM-DD`，支持香港当地今日和昨日。优先匹配主航班号，允许用唯一的代码共享号查询。结果保留 `source_updated_at`、`state`、`source_url` 和原到港记录 `flight`。多条匹配返回 409，未匹配时返回 `flight: null`。本入口与现有到港表和接机观察共用缓存。
+
+接待卡的 `travel_links` 提供 Google Maps 驾车路线、酒店地点和 Uber 链接。调度员可选填会合点及酒店上落车点的 WGS84 坐标。两个坐标都有时预填 Uber 路线，仅由乘客在 Uber 核价及确认。没有坐标的接待卡仍提供酒店地址、Google Maps 和 Uber 入口。
+
+`POST /api/events/{event_id}/arrival-plans/{plan_id}/route-estimate?version=<version>` 以接待卡当前版本查询 Google Maps 驾车距离及预计时间。调用者必须能查看该接待卡，落地响应包含 `provider`、`distance_meters`、`duration_seconds` 和 `observed_at`。结果即时显示，接机和酒店风险计算继续使用调度员确认的安排。
+
+### 接机到港事件与逐球员接待
+
+- `GET /api/events/{event_id}/arrival-events?after=<seq>` 为中台和使用该身份的 Runtime 消费者返回已提交的 `FlightArrived` 事件。每个活动、香港服务日期和实际承运航班只生成一次。版本、来源、机场状态、观测时间和记录时间均在响应中。
+- 手机原到港 SSE 新增 `runtime_event_seq` 和 `announce`。同一人员负责同航班的多个车组时，只有第一条可见到港记录触发系统通知。以后到机位及其他接待卡变化仍能用同一流读取。旧客户端仍可读取原有消息。消息不含球员资料。
+- `POST /api/events/{event_id}/arrival-events/{seq}/receipt` 接受 `status: "received" | "acknowledged"`。本人当前接机或司机身份才能写回。系统通知提交给 Android 后回报接收，人员点击接待卡按钮后确认。中台分别显示两个回执；重复提交保留原时间。
+- `POST /api/events/{event_id}/arrival-plans/{plan_id}/stages` 支持 `player_ids` 和 `request_id`。每位球员按各自当前节点确认，少于全组的操作不推进其他球员。旧单球员卡可省略 `player_ids`，多球员卡必须选择人员。沿用接待卡版本、岗位和住宿确认的校验。
+- `POST /api/events/{event_id}/arrival-plans/{plan_id}/player-exceptions` 用 `{expected_version,player_id,detail}` 报告未会合。之后该球员被确认会合时关闭异常。中台接待卡读取 `player_receptions` 和 `arrival_notice` 显示个人进度和当前值班回执。

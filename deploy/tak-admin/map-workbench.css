@@ -1,0 +1,64 @@
+.tak-workbench {
+  width: max-content;
+  max-width: min(320px, 70vw);
+  color: #182b22;
+  font: 13px/1.4 system-ui, sans-serif;
+}
+
+.tak-workbench [hidden] { display: none !important; }
+.tak-workbench-panel,
+.tak-workbench-status,
+.tak-workbench > .tak-workbench-bar {
+  background: #fff;
+  border: 1px solid #cbd8ce;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px #192e2226;
+  margin: 0 0 6px;
+  padding: 6px;
+}
+
+.tak-workbench > .tak-workbench-bar { width: max-content; margin-left: auto; }
+.tak-workbench-panel { display: grid; gap: 8px; padding: 10px; width: min(320px, 70vw); }
+.tak-workbench-panel h2 { margin: 0; font-size: 14px; }
+.tak-workbench-panel small { color: #526659; }
+.tak-workbench-bar { display: flex; align-items: center; gap: 4px; }
+.tak-workbench button, .tak-workbench-popup button {
+  font: inherit;
+  cursor: pointer;
+  color: #244633;
+  background: #edf4ee;
+  border: 1px solid #c8dacc;
+  border-radius: 5px;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+.tak-workbench button:disabled { cursor: wait; opacity: .55; }
+.tak-workbench button[aria-pressed="true"],
+.tak-workbench button[aria-expanded="true"],
+.tak-workbench button[type="submit"] { color: #fff; background: #28523d; }
+.tak-workbench :is(button, input, select):focus-visible,
+.tak-workbench-popup button:focus-visible { outline: 2px solid #217a62; outline-offset: 2px; }
+.tak-workbench :is(input:not([type="checkbox"]), select) {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #a9beb0;
+  border-radius: 5px;
+  background: #fff;
+  color: #182b22;
+  padding: 6px;
+  font: inherit;
+}
+.tak-workbench-bar button { flex-shrink: 0; }
+.tak-workbench-layers { max-height: min(175px, 30vh); overflow: auto; }
+.tak-workbench-layer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 2px;
+  border-bottom: 1px solid #e1ebe2;
+}
+.tak-workbench-layer label { display: flex; align-items: center; gap: 5px; min-width: 0; cursor: pointer; }
+.tak-workbench-layer label span { overflow-wrap: anywhere; }
+.tak-workbench-placing, .tak-workbench-placing .leaflet-interactive { cursor: crosshair; }
+.tak-workbench-popup { display: grid; justify-items: start; gap: 6px; overflow-wrap: anywhere; }

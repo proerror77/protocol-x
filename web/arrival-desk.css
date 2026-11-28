@@ -60,3 +60,15 @@
 .arrival-cards:not(:empty) { margin-top: 13px; }
 #arrival-team-reissue { align-items: end; border-top: 1px solid #dbe7dc; margin-top: 15px; padding-top: 14px; }
 #arrival-team-result { margin-top: 14px; font-size: 13px; }
+
+.arrival-receipts, .arrival-player-progress {
+  list-style: none; padding: 0; margin: 0;
+  display: grid; gap: 6px; font-size: 13px;
+}
+.arrival-player-row {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  padding: 5px 0; border-bottom: 1px solid #e1e9de;
+}
+.arrival-player-row > span { flex: 1 0 100px; }
+.arrival-player-row .button { min-height: 33px; padding: 4px 8px; font-size: 12px; }
+.arrival-player-row .arrival-warning { margin: 0; }

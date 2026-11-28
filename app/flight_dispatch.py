@@ -6,6 +6,7 @@ import json
 
 from fastapi import HTTPException
 
+from .reception_progress import started as reception_started
 from .bindings import candidates, resolve
 from .store import dump
 
@@ -29,7 +30,7 @@ def available_options(conn, event_id, task, definition, observation, now):
     if all(item["status"] in {"done", "confirmed", "completed"} for item in data[binding["progress"]]):
         return []
     rules = definition.get("arrival_rules") if data.get("arrival_managed") else None
-    if rules and data[binding["progress"]][0]["status"] == "done":
+    if rules and reception_started(data, "met", 0):
         return []
     buffer = rules["taxi_minutes"] + rules["exit_min_minutes"] if rules else 30
     eta = datetime.fromisoformat(observation["estimated_at"])

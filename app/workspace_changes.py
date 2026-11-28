@@ -14,7 +14,7 @@ CHANNEL = "ops_workspace_changed"
 EVENT_TABLES = (
     "objects", "messages", "receipts", "proposals", "pickup_flight_links",
     "arrival_plans", "arrival_history", "arrival_photos", "field_task_delivery",
-    "tak_deliveries",
+    "tak_deliveries", "arrival_runtime_events", "arrival_notice_receipts",
 )
 FIELD_EVENT_TABLES = ("field_channels", "field_event_roster")
 FIELD_ACCESS_TABLES = ("field_members", "field_people", "field_suspensions", "field_devices", "field_passkeys")

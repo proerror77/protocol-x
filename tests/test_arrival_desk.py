@@ -68,6 +68,7 @@ def test_personal_reception_from_hkia_to_check_in(tmp_path, monkeypatch):
     assert image.headers["cache-control"] == "private, no-store"
     for identity in (unassigned, DEMO_STAFF, DISPATCH, {}):
         assert client.get(photo, headers=identity).status_code in {401, 404}
+        assert client.post(endpoint + "/route-estimate?version=1", headers=identity).status_code in {401, 404}
         workspace = client.get(ROOT + "/workspace", headers=identity)
         if workspace.status_code == 200:
             assert workspace.json()["arrival_desk"]["cards"] == []

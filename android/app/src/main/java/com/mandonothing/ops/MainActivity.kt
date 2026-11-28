@@ -2136,6 +2136,7 @@ class MainActivity : Activity() {
             view.background = panelColor(CHANNEL, 10, CARD_BORDER)
             view.bind(arrival)
             put(taskDetails, view, 6)
+            renderPlayerReception(arrival)
             if (role == "dispatcher" && active.bound && canReleaseArrival(arrival)) {
                 put(taskDetails, button("发布接机任务", primary = true).apply {
                     setOnClickListener { confirmArrivalDispatch(arrival) }
@@ -4777,6 +4778,83 @@ class MainActivity : Activity() {
         val task = plan.getJSONObject("task")
         return !task.has("arrival_dispatched_at") &&
             task.getJSONArray("progress").getJSONObject(0).optString("status") != "done"
+    }
+
+    private fun renderPlayerReception(plan: JSONObject) {
+        val planId = plan.getString("id")
+        val version = plan.getInt("version")
+        val notice = plan.optJSONObject("arrival_notice")
+        if (notice != null) {
+            val recipients = notice.optJSONArray("recipients")?.objects().orEmpty()
+            for (recipient in recipients) {
+                val status = when {
+                    !recipient.isNull("acknowledged_at") -> "已确认收到"
+                    !recipient.isNull("received_at") -> "已到终端 · 待确认"
+                    else -> "待终端接收"
+                }
+                put(taskDetails, text(recipient.optString("name") + " · " + status, 13, MUTED), 4)
+            }
+            if (role == "staff" && recipients.any { it.isNull("acknowledged_at") }) {
+                put(taskDetails, button("确认收到到港通知", primary = true).apply {
+                    setOnClickListener {
+                        isEnabled = false
+                        fieldCall { active, event ->
+                            try {
+                                active.arrivalNoticeReceipt(event, notice.getLong("event_seq"), "acknowledged")
+                                refresh()
+                            } finally { isEnabled = true }
+                        }
+                    }
+                }, 6)
+            }
+        }
+        val states = mapOf("waiting_meet" to "待会合", "met" to "已会合", "boarded" to "已登车",
+            "hotel_handoff" to "已交接", "checked_in" to "已入住")
+        val stages = mapOf("met" to "会合", "boarded" to "登车", "hotel_handoff" to "酒店交接", "checked_in" to "入住")
+        for (player in plan.optJSONArray("player_receptions")?.objects().orEmpty()) {
+            val name = player.getString("name")
+            val id = player.getString("id")
+            val exception = player.optJSONObject("exception")?.takeIf { it.optString("status") == "open" }
+            val status = exception?.let { "未见到 · " + it.optString("detail") }
+                ?: states[player.optString("state")].orEmpty()
+            put(taskDetails, text("$name · $status", 14, if (exception == null) INK else ACCENT), 7)
+            val stage = player.optString("next_stage")
+            stages[stage]?.let { label ->
+                put(taskDetails, button("确认${label} · $name").apply {
+                    setOnClickListener {
+                        val submit = this
+                        val key = UUID.randomUUID().toString()
+                        AlertDialog.Builder(this@MainActivity).setMessage("确认 $name 已完成$label？")
+                            .setNegativeButton("取消", null).setPositiveButton("确认") { _, _ ->
+                                submit.isEnabled = false
+                                fieldCall { active, event ->
+                                    try {
+                                        active.confirmPlayerReception(event, planId, version, id, stage, key)
+                                        refresh()
+                                    } finally { submit.isEnabled = true }
+                                }
+                            }.show()
+                    }
+                }, 4)
+            }
+            if (stage == "met" && exception == null) {
+                put(taskDetails, linkButton("报告未见到 $name").apply {
+                    setOnClickListener {
+                        val detail = input("填写现场情况", InputType.TYPE_CLASS_TEXT)
+                            .apply { setText("未在约定会合点见到球员") }
+                        AlertDialog.Builder(this@MainActivity).setTitle("报告未见到 $name")
+                            .setView(detail).setNegativeButton("取消", null)
+                            .setPositiveButton("提交") { _, _ ->
+                                val note = detail.text.toString().trim().take(120)
+                                if (note.isNotEmpty()) fieldCall { active, event ->
+                                    active.flagPlayerReception(event, planId, version, id, note)
+                                    refresh()
+                                }
+                            }.show()
+                    }
+                }, 4)
+            }
+        }
     }
 
     private fun confirmArrivalDispatch(plan: JSONObject) {
