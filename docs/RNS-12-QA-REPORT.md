@@ -1,16 +1,16 @@
-# RNS-12 QA & Decision Gate Report (`rns/integration` + `rns/s21-device-qa` + `rns/s26-dual-device-qa`)
+# RNS-12 QA & Decision Gate Report (`rns/integration` + `rns/s21-device-qa` + `rns/s26-live-verified`)
 
-- **Merged Baseline:** `origin/main` @ `d38a750` ([PR #22](https://github.com/proerror77/protocol-x/pull/22) & [PR #23](https://github.com/proerror77/protocol-x/pull/23); `RNS-01`..`RNS-11` `#9`–`#19` `CLOSED`)
-- **Dual-Device QA Harness Branch:** `rns/s26-dual-device-qa` @ `f7c0774` (stacked on `origin/main` `d38a750`)
+- **Merged Baseline:** `origin/main` @ `f858fb4` ([PR #22](https://github.com/proerror77/protocol-x/pull/22), [PR #23](https://github.com/proerror77/protocol-x/pull/23), [PR #24](https://github.com/proerror77/protocol-x/pull/24); `RNS-01`..`RNS-11` `#9`–`#19` `CLOSED`)
+- **Live S26 & Dual-Device Verification Branch:** `rns/s26-live-verified` (stacked on `origin/main` `f858fb4`)
 - **Worktree:** `/Users/proerror/Documents/toc/protocol-x-rns-full`
 - **GitHub Tracking:** [Epic #8](https://github.com/proerror77/protocol-x/issues/8) · [RNS-12 #20](https://github.com/proerror77/protocol-x/issues/20) · [RNS-13 Gate #21](https://github.com/proerror77/protocol-x/issues/21)
-- **Overall Gate Verdict:** **Automated / Loopback QA + NDK `.so` Bundling + Single-Device S21 RNS/Python E2E PASS (`f7c0774`)** · **S26 Android 17 & Live S21↔S26 RF Field Gate PENDING (`RNS-13` remains BLOCKED)**
+- **Overall Gate Verdict:** **Automated / Loopback QA + NDK `.so` Bundling + S21 & S26 Standalone + Live Dual-Phone S21↔S26 Wi-Fi Aware RF P2P PASS** · **Multi-Hop (3–5 Phones), 50–100 m LOS Walk & 24 h Soak PENDING (`RNS-13` remains BLOCKED)**
 
 ---
 
-## 1. Automated, Loopback & Single-Device S21 Verified Checks
+## 1. Automated, Loopback & Real-Device Verified Checks
 
-All three language stacks plus real Android NDK `.so` packaging and physical S21 Ultra (`SM-G9980`) instrumented QA were independently verified with legacy Nearby Mesh (`NearbyRadios`, `NearbyMessages`, `NearbyLiveVoice`, `NearbyPrivate`, `NearbyService`) preserved behind `CommGateway` adapters.
+All three language stacks, Android NDK `.so` packaging, standalone S21 (Android 15) & S26 (Android 17) hardware runs, and live dual-phone S21 ↔ S26 direct Wi-Fi Aware RF P2P (zero Internet) were independently verified with legacy Nearby Mesh (`NearbyRadios`, `NearbyMessages`, `NearbyLiveVoice`, `NearbyPrivate`, `NearbyService`) preserved behind `CommGateway` adapters.
 
 ### 1.1 Rust Core & Multi-Node Scale / Interop (`rust/protocolx-rns`)
 
@@ -71,35 +71,42 @@ All three language stacks plus real Android NDK `.so` packaging and physical S21
     - Includes `RnsFullIntegrationTest` (2 tests using `IntegratedFakeCoreEngine`, `FakeBridgeSink`, `NoopAudioIo`, and `DefaultCommGateway` verifying cross-package wiring across `comm.aware`, `comm.network`, `comm.ptt`, `comm.rns`, `RnsOfflineSyncReconciler`, and `<5s` LiveKit ↔ RNS PTT handoff), `RnsWave1IntegrationTest` (5 tests), `RnsAwareIfacBridgeTest` (2), `RnsNetworkAndTopologyTest` (2), `RnsPttTransportTest` (4), `RnsAwareAdaptersTest` (3), `PeerCapacityManagerTest` (4), `TrackedResourceRegistryTest` (2), `CommInterfaceTest` (5), `RnsLocalStoreTest` (2), `RnsRuntimeCoordinatorTest` (3), `RnsLxmfTransportAdapterTest` (3), plus 47 existing baseline tests.
   - `assembleDebug`: **`BUILD SUCCESSFUL` in 7s** — generated `android/app/build/outputs/apk/debug/app-debug.apk` (**159M**, verified with bundled `libprotocolx_rns.so` on `rns/s21-device-qa` `9d44af3`).
 
-### 1.4 Real Physical Device QA — S21 Ultra Verified & S26 / Dual-Device Harness (`rns/s26-dual-device-qa` @ `f7c0774`)
+### 1.4 Real Physical Device QA — S21 Ultra, S26 Ultra & Live S21 ↔ S26 Wi-Fi Aware RF P2P (`f858fb4`)
 
-- **Target Device Verified:** Samsung Galaxy S21 Ultra (`SM-G9980`, serial `R5CR40E11PP`, Android 15 / SDK 35, `arm64-v8a`, `wifi.aware` + `bluetooth_le` supported). Installed under `-PopsAppIdSuffix=.rnsqa` (`com.mandonothing.ops.rnsqa.test`), leaving user `com.mandonothing.ops` `versionCode=48` / `0.27.4` untouched.
-- **S21 Regression Command (`f7c0774`):** `/Users/proerror/Documents/toc/protocol-x-rns-full/scripts/run-s21-device-qa.sh` (`S21RealRnsDeviceTest`, updated with `checkSelfPermission` guard before `GrantPermissionRule` + parameterized `ADB_SERIAL` / `pm grant`).
-- **Observed Result on S21 (`f7c0774`):** **`OK (5 tests)` in `4.021s`** (`t01`..`t05`), with Python `RNS 1.6.1`/`LXMF 1.3.1` peer logging `completed` (`got_opp_s21=true`, `got_res_s21=true`, `got_ptt_floor=true`, `got_ptt_frame=true`, `got_done_ack=true`, `sent_lxmf_to_s21=true`, `sent_ptt_to_s21=true`):
-  - `t01`: Loaded real `arm64-v8a` `libprotocolx_rns.so` (`isNativeAvailable=true`); verified `generateIdentity`, `loadIdentityFromSecret`, `deriveEventIfacConfig`, `bindActorDeviceToRns`, and `verifyActorDeviceBinding` over UniFFI JNI.
-  - `t02`: Verified `UniFFIRnsCoreEngine` (`RnsNode`) + `RnsRuntimeService` foreground service + `AndroidKeyStore` AES-GCM `RnsLocalStore` identity persistence across service restart and clean shutdown on Android 15.
-  - `t03`: Verified S21 `WifiAwareManager` (`FEATURE_WIFI_AWARE`) + `BluetoothManager` (`FEATURE_BLUETOOTH_LE`, `AndroidBleL2capDriver.isAvailable=true`) + zero-leak `TrackedNetworkCallbackRegistry`/`RnsWifiAwareAdapter`/`RnsBleL2capAdapter` teardown (`activeNetworkCallbacks=0`, `activeSockets=0`).
-  - `t04`: Verified real bidirectional **S21 `RnsNode` ↔ Mac Python `RNS 1.6.1`/`LXMF 1.3.1` (`private IFAC protocolx.s21.qa`)** over `adb reverse` (`17421`/`17422`): rogue wrong-IFAC peer isolation (`rogueLxmf` & `roguePrimary` blocked), `OppS21` & `ResS21` (`6,144` B Resource) + `OppPyS21` & `ResPyS21` (`5,120` B Resource) all `signature_validated=true`, `S21DoneAck` received, and PTT floor (`GRANT`/`RELEASE`) + `20ms`/`164B` IMA ADPCM PTT frames verified (`completed` exit `0`).
-  - `t05`: Verified S21 `RnsPttAdpcmCodec` (`164B`/`320` samples/`20ms`) + `RnsPttSessionTransport` (`14` frames played, archived `VoiceCapturedClip`).
-- **S26 Ultra & Dual-Device Harness (`f7c0774` — Code-Reviewed & Compiled; Live Execution Pending Online S26):**
-  - Added `DualDeviceRnsTest.kt` (442 lines, gated by `-e role publisher|subscriber`, wiring `RnsWifiAwareAdapter` + `RnsBleL2capAdapter` + `RnsAwareBridgeConnector` + `RnsIfacFrameGuard` + `UniFFIRnsCoreEngine`, silent `20ms`/`164B` ADPCM PTT, synchronous `awareCoordinator.close()` leak assertions) and `scripts/run-dual-device-qa.sh`.
-  - Host `./gradlew testDebugUnitTest --rerun-tasks` (**25 suites, 84 tests, 0 failures, 0 errors, 0 skipped**) and `./gradlew assembleDebug assembleDebugAndroidTest` (**`BUILD SUCCESSFUL`**) verified on `f7c0774`.
-  - **S26 (`100.108.44.112:5555`) ADB Reachability:** `adb connect 100.108.44.112:5555` timed out (`connect_timeout` after 6 s) and S26 was offline during `@verifier` execution; therefore standalone S26 Android 17 `run-s21-device-qa.sh` and live S21 ↔ S26 `run-dual-device-qa.sh` remain **PENDING online S26 availability and co-located physical RF execution**.
+Both physical phones were verified using `-PopsAppIdSuffix=.rnsqa` (`com.mandonothing.ops.rnsqa.test`), leaving user `com.mandonothing.ops` (`versionCode=48`, `versionName=0.27.4`) completely untouched on both devices:
+- **Galaxy S21 Ultra:** `SM-G9980`, serial `R5CR40E11PP`, Android 15 / SDK 35, `arm64-v8a`, `wifi.aware` + `bluetooth_le` supported.
+- **Galaxy S26 Ultra:** `SM-S9480`, serial `100.108.44.112:5555`, Android 17 / SDK 37, `arm64-v8a`, `wifi.aware` + `bluetooth_le` supported.
+
+#### Run 1 — Standalone S26 Ultra (Android 17 / SDK 37)
+- **Command:** `ADB_SERIAL=100.108.44.112:5555 /Users/proerror/Documents/toc/protocol-x-rns-full/scripts/run-s21-device-qa.sh`
+- **Observed Result (`RUN1_EXIT=0`):** **`OK (5 tests)` in `3.861s`** (`S21RealRnsDeviceTest` `t01`..`t05`), with Mac Python `RNS 1.6.1`/`LXMF 1.3.1` peer logging `completed` (`got_opp_s21=true`, `got_res_s21=true`, `got_ptt_floor=true`, `got_ptt_frame=true`, `got_done_ack=true`, `sent_lxmf_to_s21=true`, `sent_ptt_to_s21=true`).
+  - Matches S21 Ultra baseline (`OK (5 tests)` in `4.021s` on `f7c0774`), confirming `arm64-v8a` `libprotocolx_rns.so` JNI load, Android 17 `RnsRuntimeService` + `AndroidKeyStore`, `WifiAwareManager` + `BluetoothManager` zero-leak teardown, bidirectional S26 ↔ Mac Python LXMF/Resource/PTT, and `RnsPttSessionTransport` self-check.
+
+#### Run 2 — Live Dual-Phone S21 ↔ S26 Direct Encrypted P2P (Zero Internet)
+- **Command:** `/Users/proerror/Documents/toc/protocol-x-rns-full/scripts/run-dual-device-qa.sh`
+- **Observed Result (`RUN2_EXIT=0`):**
+  - **S21 Publisher (`R5CR40E11PP`, Android 15):** **`OK (1 test)` in `8.299s`**
+  - **S26 Subscriber (`100.108.44.112:5555`, Android 17):** **`OK (1 test)` in `7.748s`**
+  - **Transport Convergence:** Initial BLE L2CAP probe (`rssi=-53` on S21) cleanly converged onto direct **Wi-Fi Aware (`WIFI_AWARE`)** (`BLE_L2CAP=UNAVAILABLE`) in ~`5 s` (`packetLossRate=0.0` on both phones):
+    - S21 (`aware:536870914`): `rttMs=69`, `estimatedBandwidthBps=11,085,182` (`~11.1 Mbps`), final `RnsNode` `linkRttMs=29`.
+    - S26 (`aware:268435457`): `rttMs=75`, `estimatedBandwidthBps=18,471,551` at discovery / `8,584,915` at completion, final `RnsNode` `linkRttMs=25`.
+  - **IFAC Isolation & Zero-Leak Teardown:** Both S21 & S26 logged `droppedPublicConfig=0`, `droppedExpiredLease=0`, `droppedWrongIfac=0`, `droppedRevokedPeer=0`, `droppedRevokedDestination=0`, final `ifacSealed=30`, `ifacAccepted=30` on both phones, and `activeNetworkCallbacks=0`, `activeSockets=0`.
+  - **Bidirectional Payloads:** Signed/encrypted LXMF (`DualPubOpp`/`DualSubOpp`, `DualDoneAck`), `4,608` B Resource attachments (`DualPubRes`/`DualSubRes`), and silent `20 ms`/`164 B` IMA ADPCM PTT frames + floor control (`pttTxMs=265` on S21 for floor grant + 5 frames + release).
 
 ---
 
 ## 2. P0 Target Status Matrix (Verified vs. Pending Multi-Phone Field Hardware)
 
-| P0 Target | Automated / S21 Single-Device Status (`f7c0774`) | Physical Multi-Phone Field-Hardware Status (Required for Gate) |
+| P0 Target | Automated & Dual-Phone S21/S26 Status (`f858fb4`) | Remaining Physical Field-Hardware Status (Required for Gate) |
 | --- | --- | --- |
-| **Android NDK Native `.so` Packaging** | **VERIFIED (S21 `arm64-v8a` + `x86_64`):** `libprotocolx_rns.so` built via `scripts/build-rns-android.sh`, bundled in `app-debug.apk`, and loaded on S21 (`isNativeAvailable=true`) | **DONE** |
-| **Single-hop range (50–100 m)** | S21 `WifiAwareManager` & `BluetoothManager` hardware verified (`t03`); RF range requires a 2nd physical phone | **PENDING:** Two-device Android Wi-Fi Aware LOS field walk test (requires 2nd physical phone) |
-| **Multi-hop depth (1–5 hops)** | **VERIFIED (Rust ↔ Python / Loopback + S21 ↔ Mac Python):** 1/3/5-hop Rust chains (`A↔B↔C↔D↔E↔F`) + 3-hop Rust ↔ Python LXMF + S21 ↔ Python E2E (`t04`) | **PENDING:** 3–5 physical Android phones chained over real Wi-Fi Aware / BLE L2CAP RF |
-| **PTT E2E latency (<500 ms 1-hop, <800 ms 3-hop)** | **VERIFIED (Loopback + S21 Codec/JNI):** `4–22 ms` 1-hop & `8–39 ms` 3-hop Rust frame relay (`N=10..100`); S21 ADPCM + `RnsPttSessionTransport` (`t05`) + S21 ↔ Python PTT frames (`t04`) verified | **PENDING:** Multi-device physical Android microphone-to-speaker audio capture, Wi-Fi Aware RF hops & playout timing (`run-dual-device-qa.sh` awaiting online/co-located S26) |
-| **Message & Task delivery (>= 99.9%)** | **VERIFIED (Loopback / Simulation + S21 ↔ Python):** 100% delivery across `N=10/20/50/100` tiers + S21/Python `5 KB`–`6 KB` LXMF Resource transfer (`t04`) | **PENDING:** Multi-hour field packet-loss & intermittent mobility verification on multiple physical phones |
-| **Network failover (< 5 s)** | **VERIFIED (JVM Unit / Integration):** `DefaultCommGateway` + `RnsNetworkManager` + `RnsPttHandoffCoordinator` transition verified `< 5,000 ms` | **PENDING:** Live Cellular/Wi-Fi WAN ↔ Android Wi-Fi Aware ↔ BLE L2CAP radio handoff under real RF contention |
+| **Android NDK Native `.so` Packaging** | **VERIFIED (S21 + S26 `arm64-v8a`):** `libprotocolx_rns.so` built via `scripts/build-rns-android.sh`, bundled in `app-debug.apk`, and loaded on both S21 & S26 (`isNativeAvailable=true`) | **DONE** |
+| **Single-hop range (50–100 m)** | **PARTIAL (S21 ↔ S26 Wi-Fi Aware RF P2P PASS):** Direct `WIFI_AWARE` link (`~11.1 Mbps` / `8.6–18.5 Mbps`, `linkRttMs=25..29`, `0.0` loss) verified between S21 & S26 | **PENDING:** Measured `50–100 m` outdoor LOS distance walk test |
+| **Multi-hop depth (1–5 hops)** | **VERIFIED (1-hop S21↔S26 RF + 1/3/5-hop Rust/Python Loopback):** Live 1-hop S21 ↔ S26 RF + 1/3/5-hop Rust chains (`A↔B↔C↔D↔E↔F`) + 3-hop Rust ↔ Python LXMF | **PENDING:** `3–5` physical Android phones chained over real Wi-Fi Aware / BLE L2CAP RF |
+| **PTT E2E latency (<500 ms 1-hop, <800 ms 3-hop)** | **PARTIAL (S21↔S26 Silent ADPCM + Loopback):** S21 ↔ S26 `20ms`/`164B` ADPCM PTT floor + 5 frames + release completed (`pttTxMs=265`); Rust loopback `4–22 ms` (1-hop) / `8–39 ms` (3-hop) | **PENDING:** Multi-device live hardware mic-to-speaker audio PTT latency & `3`-hop physical RF timing |
+| **Message & Task delivery (>= 99.9%)** | **VERIFIED (S21↔S26 RF + `N=10..100` Sim):** Live S21 ↔ S26 bidirectional LXMF + `4,608` B Resource (`0.0` loss) + 100% delivery across `N=10/20/50/100` tiers | **PENDING:** Multi-hour field packet-loss & intermittent mobility verification |
+| **Network failover (< 5 s)** | **PARTIAL (S21↔S26 BLE→Wi-Fi Aware + JVM):** S21 ↔ S26 converged BLE probe -> Wi-Fi Aware in `~5 s`; `RnsNetworkManager` + `RnsPttHandoffCoordinator` `< 5,000 ms` in JVM tests | **PENDING:** Live Cellular/Wi-Fi WAN ↔ Wi-Fi Aware ↔ BLE L2CAP failover under active RF contention |
 | **Duplicate actions (0)** | **VERIFIED (Backend + Android Unit):** Shared `execute_task_action` + `rns_envelopes` + `StageInput.idempotency_key` + `RnsOfflineSyncReconciler` `409` tests (`0` duplicates across `pytest` 63/63 & `unittest` 39/39) | **PENDING:** Live multi-path chaos soak against running Ops + `RnsGateway` |
-| **Public RNS dependency (0)** | **VERIFIED (Sim + S21):** `ifac_leaks=0` across `N=10..100`, S21 `t04` verified rogue wrong-IFAC peer isolation (`rogueLxmf` & `roguePrimary` blocked) | **VERIFY ON MULTI-DEVICE FIELD BUILD:** Packet capture / log audit during physical field test |
+| **Public RNS dependency (0)** | **VERIFIED (S21 + S26 + Sim):** Both S21 & S26 logged `droppedPublicConfig=0`, `ifacSealed=30`, `ifacAccepted=30`, rogue wrong-IFAC blocked (`t04`), `ifac_leaks=0` across `N=10..100` | **VERIFY ON 3–5 PHONE FIELD BUILD:** Packet capture / log audit during multi-hop field walk |
 | **24 h endurance** | Not yet run (requires long-running soak) | **PENDING:** 24 h continuous multi-device soak monitoring RSS memory, FDs, battery & wake locks |
 | **Scale (10 / 20 / 50 / 100 nodes)** | **VERIFIED (Simulation):** `rns12_scale_chaos.rs` passed `N=10, 20, 50, 100` (100% delivery, `0` IFAC leaks) | **PENDING (Optional/Dense Field):** Real RF density test (target cluster size >= 10 physical devices) |
 
@@ -107,9 +114,9 @@ All three language stacks plus real Android NDK `.so` packaging and physical S21
 
 ## 3. Decision Gate Verdict (`RNS-13` Remains Blocked)
 
-Per [docs/RNS-ROADMAP.md](RNS-ROADMAP.md) Section 7, **RNS-13 (`#21` — Retire Custom Mesh Duplicates) MUST NOT proceed** until the remaining multi-phone physical field-hardware checks are completed and signed off (NDK `.so` bundling and single-device S21 `arm64-v8a` JNI/Keystore/radio/Python E2E are now complete):
-1. ~~Build and bundle `libprotocolx_rns.so` (`arm64-v8a`, `x86_64`) into the Android APK~~ — **DONE** (`scripts/build-rns-android.sh`, verified on S21 `R5CR40E11PP`).
-2. Verify `50–100 m` single-hop Wi-Fi Aware LOS range across at least 2 physical Android phones.
+Per [docs/RNS-ROADMAP.md](RNS-ROADMAP.md) Section 7, **RNS-13 (`#21` — Retire Custom Mesh Duplicates) MUST NOT proceed** until the remaining multi-phone physical field-hardware checks are completed and signed off (NDK `.so` bundling, standalone S21/S26 Android 15/17 runs, and live 1-hop S21 ↔ S26 direct Wi-Fi Aware RF P2P are now verified):
+1. ~~Build and bundle `libprotocolx_rns.so` (`arm64-v8a`, `x86_64`) into the Android APK & verify on S21/S26~~ — **DONE** (`scripts/build-rns-android.sh`, S21 `4.021s` / S26 `3.861s` / S21↔S26 `RUN2_EXIT=0`).
+2. Verify `50–100 m` outdoor Wi-Fi Aware LOS range walk test across physical Android phones.
 3. Verify `3–5 hop` end-to-end physical Android RF chain (LXMF + offline task actions + BLE L2CAP fallback).
-4. Measure multi-device physical Android hardware audio PTT E2E latency (`< 500 ms` 1-hop, `< 800 ms` 3-hop) and live `< 5 s` WAN ↔ RF failover under RF contention.
+4. Measure multi-device live hardware mic-to-speaker audio PTT E2E latency (`< 500 ms` 1-hop, `< 800 ms` 3-hop) and live `< 5 s` WAN ↔ RF failover under RF contention.
 5. Complete a `24 h` continuous device endurance soak with zero OOM/FD leaks or duplicate task executions.
