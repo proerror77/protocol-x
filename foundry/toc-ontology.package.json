@@ -1,0 +1,3310 @@
+{
+  "format": "eigos-ontology-package-v1",
+  "ontology": "TocOperations",
+  "version": "1.0.0",
+  "digest": "fdf68bebe5a9912b1e7fec54baa2211a2fea56eaaa8a134777ca271247eb074a",
+  "document": {
+    "id": "TocOperations",
+    "version": "1.0.0",
+    "typeGroups": [
+      {
+        "apiName": "CoreDispatch",
+        "displayName": "Core Operations & Dispatch",
+        "description": "Events, personnel, work items, reservable resources, and reception plans",
+        "objectTypes": [
+          "Event",
+          "Person",
+          "TransferLeg",
+          "Vehicle",
+          "ArrivalPlan",
+          "Session",
+          "Room"
+        ]
+      },
+      {
+        "apiName": "ExternalObservations",
+        "displayName": "External Observations (Read-Isolated)",
+        "description": "External HKIA flight and TAK CoT observations that never overwrite confirmed facts",
+        "objectTypes": [
+          "FlightObservation",
+          "TakObservation"
+        ]
+      },
+      {
+        "apiName": "GovernanceAndProcess",
+        "displayName": "Machinery & Scenarios",
+        "description": "Process state logs and HITL scenario proposals",
+        "objectTypes": [
+          "ArrivalPlanReceptionStageLog",
+          "OntologyScenario"
+        ]
+      }
+    ],
+    "interfaceTypes": [
+      {
+        "apiName": "WorkItem",
+        "description": "Domain-agnostic operational work item projected to Web and Android dispatch clients",
+        "properties": {
+          "id": {
+            "description": "Unique work item identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Owning activity/event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "title": {
+            "description": "Display title",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "description": {
+            "description": "Route or operational brief",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "subjectLabel": {
+            "description": "Passenger, player, or speaker label",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "ownerActor": {
+            "description": "Assigned operator actor ID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "dispatchStatus": {
+            "description": "Assignment acknowledgement state",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "assigned",
+                "acknowledged",
+                "declined",
+                "completed"
+              ]
+            },
+            "required": true
+          },
+          "requiredCapacity": {
+            "description": "Minimum required capacity (seats)",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "pickupAt": {
+            "description": "Optional scheduled pickup timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": false
+          }
+        },
+        "optionalProperties": [
+          "pickupAt"
+        ],
+        "links": {
+          "assignedResource": {
+            "target": "ReservableResource",
+            "cardinality": "one",
+            "required": false
+          }
+        },
+        "actions": {
+          "acknowledge": {
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "item": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expectedRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "item",
+                "expectedRevision"
+              ],
+              "additionalProperties": false
+            },
+            "objectParameters": {
+              "item": "WorkItem"
+            },
+            "required": true
+          },
+          "decline": {
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "item": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expectedRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 300
+                }
+              },
+              "required": [
+                "item",
+                "expectedRevision"
+              ],
+              "additionalProperties": false
+            },
+            "objectParameters": {
+              "item": "WorkItem"
+            },
+            "required": true
+          }
+        }
+      },
+      {
+        "apiName": "ReservableResource",
+        "description": "Capacity-bearing operational resource (Vehicle, Room, etc.)",
+        "properties": {
+          "id": {
+            "description": "Unique resource identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Owning activity/event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "label": {
+            "description": "Human-readable callsign or room label",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "capacity": {
+            "description": "Maximum capacity",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "readiness": {
+            "description": "Operational availability state",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "available",
+                "unavailable",
+                "maintenance"
+              ]
+            },
+            "required": true
+          }
+        },
+        "optionalProperties": [],
+        "links": {},
+        "actions": {}
+      },
+      {
+        "apiName": "ProcessLog",
+        "description": "Observed changes to an Ontology process state",
+        "properties": {
+          "id": {
+            "description": "Process log id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "name": {
+            "description": "Process log name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "processId": {
+            "description": "Process log processId",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "property": {
+            "description": "Process log property",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "oldState": {
+            "description": "Process log oldState",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "newState": {
+            "description": "Process log newState",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "timestamp": {
+            "description": "Process log timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "recordedAt": {
+            "description": "Process log recordedAt",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "sequence": {
+            "description": "Process log sequence",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "action": {
+            "description": "Process log action",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "requestId": {
+            "description": "Process log requestId",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "taskId": {
+            "description": "Process log taskId",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "source": {
+            "description": "Process log source",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "actor": {
+            "description": "Process log actor",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "release": {
+            "description": "Process log release",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        },
+        "optionalProperties": [],
+        "links": {},
+        "actions": {}
+      },
+      {
+        "apiName": "Scenario",
+        "description": "An owned or explicitly shared Scenario proposal",
+        "properties": {
+          "id": {
+            "description": "Scenario identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "name": {
+            "description": "Scenario name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "owner": {
+            "description": "Owning authenticated identity",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "state": {
+            "description": "Proposal lifecycle state",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "reviewStatus": {
+            "description": "Review status of the current proposal revision",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "in-review",
+                "approved",
+                "rejected"
+              ]
+            },
+            "required": false
+          },
+          "revision": {
+            "description": "Revision to inspect before changing or merging the proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "expiresAt": {
+            "description": "Expiration time",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "syncConflict": {
+            "description": "Whether automatic synchronization observed a conflict",
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false
+          }
+        },
+        "optionalProperties": [],
+        "links": {},
+        "actions": {}
+      }
+    ],
+    "objectTypes": [
+      {
+        "apiName": "Event",
+        "displayName": "Operational Event",
+        "description": "An isolated tournament, conference, or field operation activity",
+        "primaryKey": "id",
+        "titleProperty": "title",
+        "groups": [
+          "CoreDispatch"
+        ],
+        "properties": {
+          "id": {
+            "description": "Event identifier (e.g. golf-demo)",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "title": {
+            "description": "Event display title",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "domain": {
+            "description": "Operational domain template",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "golf",
+                "conference",
+                "custom"
+              ]
+            },
+            "required": true
+          },
+          "status": {
+            "description": "Lifecycle status",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "archived"
+              ]
+            },
+            "required": true
+          }
+        },
+        "interfaces": {}
+      },
+      {
+        "apiName": "Person",
+        "displayName": "Field Operator",
+        "description": "Authenticated dispatcher, driver, greeter, or steward bound to an event",
+        "primaryKey": "id",
+        "titleProperty": "name",
+        "groups": [
+          "CoreDispatch"
+        ],
+        "properties": {
+          "id": {
+            "description": "Person actor identifier (person-<hex>)",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Primary event scope",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "name": {
+            "description": "Full name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "callsign": {
+            "description": "Radio / TAK callsign",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "role": {
+            "description": "Operational role",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "dispatcher",
+                "staff"
+              ]
+            },
+            "required": true
+          },
+          "suspended": {
+            "description": "Whether access is currently suspended",
+            "schema": {
+              "type": "boolean"
+            },
+            "required": true
+          }
+        },
+        "interfaces": {}
+      },
+      {
+        "apiName": "Vehicle",
+        "displayName": "Shuttle Vehicle",
+        "description": "Ground transport vehicle for golf/airport transfer operations",
+        "primaryKey": "id",
+        "titleProperty": "callsign",
+        "groups": [
+          "CoreDispatch"
+        ],
+        "properties": {
+          "id": {
+            "description": "Vehicle identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "callsign": {
+            "description": "Vehicle display callsign",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "seats": {
+            "description": "Passenger seat capacity",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "readiness": {
+            "description": "Vehicle operational readiness",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "available",
+                "unavailable",
+                "maintenance"
+              ]
+            },
+            "required": true
+          }
+        },
+        "interfaces": {
+          "ReservableResource": {
+            "properties": {
+              "id": "id",
+              "eventId": "eventId",
+              "label": "callsign",
+              "capacity": "seats",
+              "readiness": "readiness"
+            },
+            "links": {},
+            "actions": {}
+          }
+        }
+      },
+      {
+        "apiName": "TransferLeg",
+        "displayName": "Transfer Leg",
+        "description": "Confirmed airport or venue ground transfer work item (Golf domain)",
+        "primaryKey": "id",
+        "titleProperty": "title",
+        "groups": [
+          "CoreDispatch"
+        ],
+        "properties": {
+          "id": {
+            "description": "Transfer leg identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "title": {
+            "description": "Transfer leg title",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "route": {
+            "description": "Origin to destination route description",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "playerName": {
+            "description": "Passenger or player group display name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "assignedDriver": {
+            "description": "Assigned driver actor ID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "dispatchState": {
+            "description": "Driver acknowledgement state",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "assigned",
+                "acknowledged",
+                "declined",
+                "completed"
+              ]
+            },
+            "required": true
+          },
+          "passengers": {
+            "description": "Number of passengers",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "pickupAt": {
+            "description": "Confirmed ground pickup timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": false
+          },
+          "vehicleId": {
+            "description": "Currently assigned vehicle ID",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": false
+          },
+          "declineReason": {
+            "description": "Optional reason if declined by operator",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": false
+          }
+        },
+        "interfaces": {
+          "WorkItem": {
+            "properties": {
+              "id": "id",
+              "eventId": "eventId",
+              "title": "title",
+              "description": "route",
+              "subjectLabel": "playerName",
+              "ownerActor": "assignedDriver",
+              "dispatchStatus": "dispatchState",
+              "requiredCapacity": "passengers",
+              "pickupAt": "pickupAt"
+            },
+            "links": {
+              "assignedResource": "vehicle"
+            },
+            "actions": {
+              "acknowledge": {
+                "action": "AcceptTransfer",
+                "parameters": {
+                  "item": "transfer",
+                  "expectedRevision": "expectedRevision"
+                }
+              },
+              "decline": {
+                "action": "DeclineTransfer",
+                "parameters": {
+                  "item": "transfer",
+                  "expectedRevision": "expectedRevision",
+                  "reason": "reason"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "apiName": "ArrivalPlan",
+        "displayName": "Player Arrival Plan",
+        "description": "Airport reception plan grouping players, hotel stay, greeter, and Machinery stage",
+        "primaryKey": "id",
+        "titleProperty": "title",
+        "groups": [
+          "CoreDispatch"
+        ],
+        "properties": {
+          "id": {
+            "description": "Arrival plan identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "title": {
+            "description": "Arrival plan display title",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "flightNumber": {
+            "description": "Primary flight number (e.g. CX881)",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "flightDate": {
+            "description": "Hong Kong local service date (YYYY-MM-DD)",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "meetingPoint": {
+            "description": "Airport meeting point",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "greeterActor": {
+            "description": "Assigned airport greeter actor ID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "driverActor": {
+            "description": "Assigned driver actor ID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "hotelName": {
+            "description": "Destination hotel name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "hotelConfirmed": {
+            "description": "Dispatcher-confirmed hotel booking gate",
+            "schema": {
+              "type": "boolean"
+            },
+            "required": true
+          },
+          "latestCheckIn": {
+            "description": "Latest check-in time in HK local HH:MM",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": false
+          },
+          "transferMinutes": {
+            "description": "Estimated airport-to-hotel transfer duration in minutes",
+            "schema": {
+              "type": "integer",
+              "minimum": 5
+            },
+            "required": true
+          },
+          "receptionStage": {
+            "description": "Declarative Machinery reception lifecycle stage",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "met",
+                "boarded",
+                "hotelHandoff",
+                "checkedIn"
+              ]
+            },
+            "required": true
+          }
+        },
+        "interfaces": {}
+      },
+      {
+        "apiName": "ArrivalPlanReceptionStageLog",
+        "displayName": "Arrival Plan process log",
+        "description": "Committed changes to ArrivalPlan.receptionStage; proposed Scenario edits are excluded",
+        "primaryKey": "id",
+        "titleProperty": "name",
+        "groups": [
+          "GovernanceAndProcess"
+        ],
+        "typeClasses": [
+          {
+            "kind": "machinery-log",
+            "name": "ArrivalPlan"
+          },
+          {
+            "kind": "machinery-property",
+            "name": "receptionStage"
+          }
+        ],
+        "properties": {
+          "id": {
+            "description": "Process log id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "name": {
+            "description": "Process log name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "processId": {
+            "description": "Process log processId",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "property": {
+            "description": "Process log property",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "oldState": {
+            "description": "Process log oldState",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "newState": {
+            "description": "Process log newState",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "timestamp": {
+            "description": "Process log timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "recordedAt": {
+            "description": "Process log recordedAt",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "sequence": {
+            "description": "Process log sequence",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "action": {
+            "description": "Process log action",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "requestId": {
+            "description": "Process log requestId",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "taskId": {
+            "description": "Process log taskId",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "source": {
+            "description": "Process log source",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": true
+          },
+          "actor": {
+            "description": "Process log actor",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "release": {
+            "description": "Process log release",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        },
+        "machinery": {
+          "states": [
+            {
+              "name": "pending",
+              "dwellSeconds": 3600
+            },
+            {
+              "name": "met",
+              "dwellSeconds": 1800
+            },
+            {
+              "name": "boarded",
+              "dwellSeconds": 5400
+            },
+            {
+              "name": "hotelHandoff",
+              "dwellSeconds": 1800
+            },
+            {
+              "name": "checkedIn",
+              "terminal": true
+            }
+          ],
+          "transitions": [
+            {
+              "from": "pending",
+              "to": "met",
+              "action": "AdvanceReceptionStage",
+              "execution": {
+                "subject": "plan"
+              }
+            },
+            {
+              "from": "met",
+              "to": "boarded",
+              "action": "AdvanceReceptionStage",
+              "execution": {
+                "subject": "plan"
+              }
+            },
+            {
+              "from": "boarded",
+              "to": "hotelHandoff",
+              "action": "AdvanceReceptionStage",
+              "execution": {
+                "subject": "plan"
+              }
+            },
+            {
+              "from": "hotelHandoff",
+              "to": "checkedIn",
+              "action": "AdvanceReceptionStage",
+              "execution": {
+                "subject": "plan"
+              }
+            }
+          ],
+          "metrics": {
+            "node": {
+              "label": "Active Plans",
+              "aggregation": {
+                "op": "count"
+              }
+            }
+          }
+        },
+        "interfaces": {
+          "ProcessLog": {
+            "properties": {
+              "id": "id",
+              "name": "name",
+              "processId": "processId",
+              "property": "property",
+              "oldState": "oldState",
+              "newState": "newState",
+              "timestamp": "timestamp",
+              "recordedAt": "recordedAt",
+              "sequence": "sequence",
+              "action": "action",
+              "requestId": "requestId",
+              "taskId": "taskId",
+              "source": "source",
+              "actor": "actor",
+              "release": "release"
+            },
+            "links": {},
+            "actions": {}
+          }
+        }
+      },
+      {
+        "apiName": "Room",
+        "displayName": "Conference Room",
+        "description": "Reservable venue room for conference operations (dual-domain proof)",
+        "primaryKey": "id",
+        "titleProperty": "roomLabel",
+        "groups": [
+          "CoreDispatch"
+        ],
+        "properties": {
+          "id": {
+            "description": "Room identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "roomLabel": {
+            "description": "Room display label",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "capacity": {
+            "description": "Room seating capacity",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "readiness": {
+            "description": "Room readiness state",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "available",
+                "unavailable",
+                "maintenance"
+              ]
+            },
+            "required": true
+          }
+        },
+        "interfaces": {
+          "ReservableResource": {
+            "properties": {
+              "id": "id",
+              "eventId": "eventId",
+              "label": "roomLabel",
+              "capacity": "capacity",
+              "readiness": "readiness"
+            },
+            "links": {},
+            "actions": {}
+          }
+        }
+      },
+      {
+        "apiName": "Session",
+        "displayName": "Conference Session",
+        "description": "Conference session stewardship work item implementing WorkItem identically to TransferLeg",
+        "primaryKey": "id",
+        "titleProperty": "sessionName",
+        "groups": [
+          "CoreDispatch"
+        ],
+        "properties": {
+          "id": {
+            "description": "Session identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "sessionName": {
+            "description": "Session title",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "brief": {
+            "description": "Session operational brief",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "speaker": {
+            "description": "Primary speaker name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "steward": {
+            "description": "Assigned steward actor ID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "sessionState": {
+            "description": "Steward acknowledgement state",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "assigned",
+                "acknowledged",
+                "declined",
+                "completed"
+              ]
+            },
+            "required": true
+          },
+          "attendees": {
+            "description": "Expected attendee count",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "roomId": {
+            "description": "Assigned room ID",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": false
+          },
+          "declineReason": {
+            "description": "Optional reason if declined by steward",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": false
+          }
+        },
+        "interfaces": {
+          "WorkItem": {
+            "properties": {
+              "id": "id",
+              "eventId": "eventId",
+              "title": "sessionName",
+              "description": "brief",
+              "subjectLabel": "speaker",
+              "ownerActor": "steward",
+              "dispatchStatus": "sessionState",
+              "requiredCapacity": "attendees"
+            },
+            "links": {
+              "assignedResource": "room"
+            },
+            "actions": {
+              "acknowledge": {
+                "action": "AcceptSessionStewardship",
+                "parameters": {
+                  "item": "session",
+                  "expectedRevision": "expectedRevision"
+                }
+              },
+              "decline": {
+                "action": "DeclineSessionStewardship",
+                "parameters": {
+                  "item": "session",
+                  "expectedRevision": "expectedRevision",
+                  "reason": "reason"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "apiName": "FlightObservation",
+        "displayName": "HKIA Flight Observation",
+        "description": "External airport arrival observation; strictly isolated from confirmed TransferLeg facts",
+        "primaryKey": "id",
+        "titleProperty": "flightNumber",
+        "groups": [
+          "ExternalObservations"
+        ],
+        "properties": {
+          "id": {
+            "description": "Observation key (airport:date:flight)",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "flightNumber": {
+            "description": "Primary flight number",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "serviceDate": {
+            "description": "Local service date (YYYY-MM-DD)",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "flightStatus": {
+            "description": "External airport status",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "scheduled",
+                "estimated",
+                "delayed",
+                "landed",
+                "atGate",
+                "cancelled",
+                "other"
+              ]
+            },
+            "required": true
+          },
+          "scheduledAt": {
+            "description": "Scheduled arrival time",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": false
+          },
+          "estimatedAt": {
+            "description": "Estimated arrival time",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": false
+          },
+          "actualAt": {
+            "description": "Actual landing or gate time",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": false
+          },
+          "sourceTime": {
+            "description": "Airport source publication timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "recordedAt": {
+            "description": "Server ingestion timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          }
+        },
+        "interfaces": {}
+      },
+      {
+        "apiName": "TakObservation",
+        "displayName": "TAK CoT Observation",
+        "description": "External ATAK/OpenTAKServer CoT 2.0 observation; never mutates confirmed business facts",
+        "primaryKey": "id",
+        "titleProperty": "cotUid",
+        "groups": [
+          "ExternalObservations"
+        ],
+        "properties": {
+          "id": {
+            "description": "Observation ID (takobs-<hex>)",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "eventId": {
+            "description": "Event identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "cotUid": {
+            "description": "CoT event UID",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "cotType": {
+            "description": "CoT event type string",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "category": {
+            "description": "Normalized CoT category",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "position",
+                "geochat",
+                "marker",
+                "opsPtt",
+                "other"
+              ]
+            },
+            "required": true
+          },
+          "callsign": {
+            "description": "Sender callsign",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "required": false
+          },
+          "latitude": {
+            "description": "WGS84 latitude",
+            "schema": {
+              "type": "number"
+            },
+            "required": false
+          },
+          "longitude": {
+            "description": "WGS84 longitude",
+            "schema": {
+              "type": "number"
+            },
+            "required": false
+          },
+          "observedAt": {
+            "description": "CoT event timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "staleAt": {
+            "description": "CoT stale timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": false
+          },
+          "receivedAt": {
+            "description": "Gateway ingestion timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          }
+        },
+        "interfaces": {}
+      },
+      {
+        "apiName": "OntologyScenario",
+        "displayName": "Scenario",
+        "description": "A persisted proposal and its review lifecycle metadata.",
+        "primaryKey": "id",
+        "titleProperty": "name",
+        "groups": [
+          "GovernanceAndProcess"
+        ],
+        "interfaces": {
+          "Scenario": {
+            "properties": {
+              "id": "id",
+              "name": "name",
+              "owner": "owner",
+              "state": "state",
+              "reviewStatus": "reviewStatus",
+              "revision": "revision",
+              "expiresAt": "expiresAt",
+              "syncConflict": "syncConflict"
+            },
+            "links": {},
+            "actions": {}
+          }
+        },
+        "properties": {
+          "id": {
+            "description": "Scenario identifier",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "name": {
+            "description": "Scenario name",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "owner": {
+            "description": "Owning authenticated identity",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "state": {
+            "description": "Proposal lifecycle state",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "reviewStatus": {
+            "description": "Review status of the current proposal revision",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "in-review",
+                "approved",
+                "rejected"
+              ]
+            },
+            "required": false
+          },
+          "revision": {
+            "description": "Revision to inspect before changing or merging the proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": true
+          },
+          "expiresAt": {
+            "description": "Expiration time",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          "syncConflict": {
+            "description": "Whether automatic synchronization observed a conflict",
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false
+          },
+          "release": {
+            "description": "Pinned ontology publication",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "kind": {
+            "description": "Scenario storage kind",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          "description": {
+            "description": "Author supplied description",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        }
+      }
+    ],
+    "linkTypes": [
+      {
+        "apiName": "EventTransferLegs",
+        "description": "Connects an operational event to its ground transfer legs",
+        "from": {
+          "type": "TransferLeg",
+          "name": "event",
+          "cardinality": "one"
+        },
+        "to": {
+          "type": "Event",
+          "name": "transferLegs",
+          "cardinality": "many"
+        }
+      },
+      {
+        "apiName": "TransferLegVehicle",
+        "description": "Assigned vehicle for a transfer leg",
+        "from": {
+          "type": "TransferLeg",
+          "name": "vehicle",
+          "cardinality": "one"
+        },
+        "to": {
+          "type": "Vehicle",
+          "name": "transferLegs",
+          "cardinality": "many"
+        }
+      },
+      {
+        "apiName": "ArrivalPlanTransferLeg",
+        "description": "Binds an airport player reception plan to its transfer leg",
+        "from": {
+          "type": "ArrivalPlan",
+          "name": "transferLeg",
+          "cardinality": "one"
+        },
+        "to": {
+          "type": "TransferLeg",
+          "name": "arrivalPlan",
+          "cardinality": "one"
+        }
+      },
+      {
+        "apiName": "ArrivalPlanReceptionStageLogProcess",
+        "description": "State changes of ArrivalPlan.receptionStage",
+        "from": {
+          "type": "ArrivalPlanReceptionStageLog",
+          "name": "process",
+          "cardinality": "one"
+        },
+        "to": {
+          "type": "ArrivalPlan",
+          "name": "receptionStageLogs",
+          "cardinality": "many"
+        }
+      },
+      {
+        "apiName": "TransferLegFlightObservation",
+        "description": "Links a transfer leg to its latest HKIA flight observation (read-only evidence)",
+        "from": {
+          "type": "TransferLeg",
+          "name": "flightObservation",
+          "cardinality": "one"
+        },
+        "to": {
+          "type": "FlightObservation",
+          "name": "transferLegs",
+          "cardinality": "many"
+        }
+      },
+      {
+        "apiName": "TransferLegTakObservations",
+        "description": "Links external TAK CoT observations correlated to a transfer leg",
+        "from": {
+          "type": "TakObservation",
+          "name": "transferLeg",
+          "cardinality": "one"
+        },
+        "to": {
+          "type": "TransferLeg",
+          "name": "takObservations",
+          "cardinality": "many"
+        }
+      },
+      {
+        "apiName": "SessionRoom",
+        "description": "Assigned room for a conference session",
+        "from": {
+          "type": "Session",
+          "name": "room",
+          "cardinality": "one"
+        },
+        "to": {
+          "type": "Room",
+          "name": "sessions",
+          "cardinality": "many"
+        }
+      }
+    ],
+    "functionTypes": [
+      {
+        "apiName": "CalculateReceptionWindow",
+        "description": "Pure calculation of earliest/latest airport meeting window from a FlightObservation",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "flightStatus": {
+              "type": "string"
+            },
+            "anchorIso": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "sourceTimeIso": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "taxiMinutes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "exitMinMinutes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "exitMaxMinutes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "freshMinutes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "flightStatus",
+            "anchorIso",
+            "sourceTimeIso"
+          ],
+          "additionalProperties": false
+        },
+        "returns": {
+          "type": "object",
+          "properties": {
+            "windowFrom": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "windowTo": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "validUntil": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "basis": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "windowFrom",
+            "windowTo",
+            "validUntil",
+            "basis"
+          ]
+        }
+      },
+      {
+        "apiName": "EvaluateHotelRisk",
+        "description": "Pure evaluation of whether projected hotel arrival crosses the latest check-in cutoff",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "windowToIso": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "transferMinutes": {
+              "type": "integer",
+              "minimum": 5
+            },
+            "latestCheckInHhMm": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hotelConfirmed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "windowToIso",
+            "transferMinutes",
+            "hotelConfirmed"
+          ],
+          "additionalProperties": false
+        },
+        "returns": {
+          "type": "object",
+          "properties": {
+            "lateRisk": {
+              "type": "boolean"
+            },
+            "requiresRoomHoldAlert": {
+              "type": "boolean"
+            },
+            "estimatedHotelArrivalIso": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "lateRisk",
+            "requiresRoomHoldAlert",
+            "estimatedHotelArrivalIso"
+          ]
+        }
+      },
+      {
+        "apiName": "CheckVehicleCapacity",
+        "description": "Submission criterion verifying resource readiness and seat capacity before assignment",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "requiredCapacity": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "resourceCapacity": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "resourceReadiness": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requiredCapacity",
+            "resourceCapacity",
+            "resourceReadiness"
+          ],
+          "additionalProperties": false
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      {
+        "apiName": "CanTransitionReceptionStage",
+        "description": "Submission criterion validating legal Machinery stage transitions and hotel confirmation gate",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "currentStage": {
+              "type": "string"
+            },
+            "targetStage": {
+              "type": "string"
+            },
+            "hotelConfirmed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "currentStage",
+            "targetStage",
+            "hotelConfirmed"
+          ],
+          "additionalProperties": false
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    ],
+    "actionTypes": [
+      {
+        "apiName": "AcceptTransfer",
+        "description": "Driver acknowledges assignment to a TransferLeg (does not confirm physical boarding or handoff)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "transfer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "transfer",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "transfer": "TransferLeg"
+        },
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "transfer"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "dispatchState": {
+                "literal": "acknowledged"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "TransferLeg",
+          "id": {
+            "parameter": "transfer"
+          }
+        },
+        "effects": [
+          {
+            "name": "notifyTransferAccepted",
+            "handler": "NotifyChannelFeed",
+            "payload": {
+              "objectType": {
+                "literal": "TransferLeg"
+              },
+              "objectId": {
+                "parameter": "transfer"
+              },
+              "action": {
+                "literal": "AcceptTransfer"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "apiName": "DeclineTransfer",
+        "description": "Operator marks inability to respond to a TransferLeg",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "transfer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "required": [
+            "transfer",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "transfer": "TransferLeg"
+        },
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "transfer"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "dispatchState": {
+                "literal": "declined"
+              },
+              "declineReason": {
+                "parameter": "reason"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "TransferLeg",
+          "id": {
+            "parameter": "transfer"
+          }
+        },
+        "effects": [
+          {
+            "name": "notifyTransferDeclined",
+            "handler": "NotifyChannelFeed",
+            "payload": {
+              "objectType": {
+                "literal": "TransferLeg"
+              },
+              "objectId": {
+                "parameter": "transfer"
+              },
+              "action": {
+                "literal": "DeclineTransfer"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "apiName": "AssignVehicle",
+        "description": "Dispatcher assigns or replaces a Vehicle on a TransferLeg with native time-window reservation",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "transfer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "vehicle": {
+              "type": "string",
+              "minLength": 1
+            },
+            "allocations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "resourceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "startAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "endAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "resourceId",
+                  "startAt",
+                  "endAt"
+                ]
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "transfer",
+            "expectedRevision",
+            "vehicle",
+            "allocations"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "transfer": "TransferLeg",
+          "vehicle": "Vehicle"
+        },
+        "submissionCriteria": [
+          {
+            "function": "CheckVehicleCapacity",
+            "arguments": {
+              "requiredCapacity": {
+                "parameter": "transfer",
+                "path": [
+                  "passengers"
+                ]
+              },
+              "resourceCapacity": {
+                "parameter": "vehicle",
+                "path": [
+                  "seats"
+                ]
+              },
+              "resourceReadiness": {
+                "parameter": "vehicle",
+                "path": [
+                  "readiness"
+                ]
+              }
+            },
+            "message": "Selected vehicle is unavailable or has insufficient seat capacity"
+          }
+        ],
+        "reservation": {
+          "holderParameter": "transfer",
+          "allocationsParameter": "allocations",
+          "state": "committed"
+        },
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "transfer"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "vehicleId": {
+                "parameter": "vehicle"
+              }
+            }
+          },
+          {
+            "op": "addLink",
+            "link": "TransferLegVehicle",
+            "from": {
+              "type": "TransferLeg",
+              "id": {
+                "parameter": "transfer"
+              }
+            },
+            "to": {
+              "type": "Vehicle",
+              "id": {
+                "parameter": "vehicle"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "TransferLeg",
+          "id": {
+            "parameter": "transfer"
+          }
+        },
+        "effects": [
+          {
+            "name": "dispatchVehicleChangeRns",
+            "handler": "DispatchRnsEnvelope",
+            "payload": {
+              "kind": {
+                "literal": "task"
+              },
+              "transferId": {
+                "parameter": "transfer"
+              },
+              "vehicleId": {
+                "parameter": "vehicle"
+              }
+            }
+          },
+          {
+            "name": "notifyVehicleAssigned",
+            "handler": "NotifyChannelFeed",
+            "payload": {
+              "objectType": {
+                "literal": "TransferLeg"
+              },
+              "objectId": {
+                "parameter": "transfer"
+              },
+              "action": {
+                "literal": "AssignVehicle"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "apiName": "ReschedulePickup",
+        "description": "Dispatcher updates confirmed ground pickup time (typically approved via Scenario)",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "transfer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "pickupAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "transfer",
+            "expectedRevision",
+            "pickupAt"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "transfer": "TransferLeg"
+        },
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "transfer"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "pickupAt": {
+                "parameter": "pickupAt"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "TransferLeg",
+          "id": {
+            "parameter": "transfer"
+          }
+        },
+        "effects": [
+          {
+            "name": "notifyPickupRescheduled",
+            "handler": "NotifyChannelFeed",
+            "payload": {
+              "objectType": {
+                "literal": "TransferLeg"
+              },
+              "objectId": {
+                "parameter": "transfer"
+              },
+              "action": {
+                "literal": "ReschedulePickup"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "apiName": "AdvanceReceptionStage",
+        "description": "Confirmed field operator transition of ArrivalPlan.receptionStage governed by Machinery",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "plan": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "targetStage": {
+              "type": "string",
+              "enum": [
+                "met",
+                "boarded",
+                "hotelHandoff",
+                "checkedIn"
+              ]
+            }
+          },
+          "required": [
+            "plan",
+            "expectedRevision",
+            "targetStage"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "plan": "ArrivalPlan"
+        },
+        "submissionCriteria": [
+          {
+            "function": "CanTransitionReceptionStage",
+            "arguments": {
+              "currentStage": {
+                "parameter": "plan",
+                "path": [
+                  "receptionStage"
+                ]
+              },
+              "targetStage": {
+                "parameter": "targetStage"
+              },
+              "hotelConfirmed": {
+                "parameter": "plan",
+                "path": [
+                  "hotelConfirmed"
+                ]
+              }
+            },
+            "message": "Stage transition violates reception Machinery order or requires hotel confirmation"
+          }
+        ],
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "plan"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "receptionStage": {
+                "parameter": "targetStage"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "ArrivalPlan",
+          "id": {
+            "parameter": "plan"
+          }
+        },
+        "effects": [
+          {
+            "name": "dispatchStageToTak",
+            "handler": "DispatchTakCot",
+            "payload": {
+              "planId": {
+                "parameter": "plan"
+              },
+              "stage": {
+                "parameter": "targetStage"
+              }
+            }
+          },
+          {
+            "name": "notifyStageAdvanced",
+            "handler": "NotifyChannelFeed",
+            "payload": {
+              "objectType": {
+                "literal": "ArrivalPlan"
+              },
+              "objectId": {
+                "parameter": "plan"
+              },
+              "action": {
+                "literal": "AdvanceReceptionStage"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "apiName": "ConfirmHotelReservation",
+        "description": "Dispatcher confirms or revokes hotel reservation gate on an ArrivalPlan",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "plan": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "confirmed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "plan",
+            "expectedRevision",
+            "confirmed"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "plan": "ArrivalPlan"
+        },
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "plan"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "hotelConfirmed": {
+                "parameter": "confirmed"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "ArrivalPlan",
+          "id": {
+            "parameter": "plan"
+          }
+        }
+      },
+      {
+        "apiName": "RecordFlightObservation",
+        "description": "Ingest external HKIA flight observation without mutating TransferLeg or ArrivalPlan",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "flightNumber": {
+              "type": "string",
+              "minLength": 2
+            },
+            "serviceDate": {
+              "type": "string",
+              "minLength": 10
+            },
+            "flightStatus": {
+              "type": "string",
+              "enum": [
+                "scheduled",
+                "estimated",
+                "delayed",
+                "landed",
+                "atGate",
+                "cancelled",
+                "other"
+              ]
+            },
+            "scheduledAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "estimatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "actualAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "sourceTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "recordedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "id",
+            "eventId",
+            "flightNumber",
+            "serviceDate",
+            "flightStatus",
+            "sourceTime",
+            "recordedAt"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "createObject",
+            "object": {
+              "type": "FlightObservation",
+              "id": {
+                "parameter": "id"
+              }
+            },
+            "properties": {
+              "id": {
+                "parameter": "id"
+              },
+              "eventId": {
+                "parameter": "eventId"
+              },
+              "flightNumber": {
+                "parameter": "flightNumber"
+              },
+              "serviceDate": {
+                "parameter": "serviceDate"
+              },
+              "flightStatus": {
+                "parameter": "flightStatus"
+              },
+              "scheduledAt": {
+                "parameter": "scheduledAt"
+              },
+              "estimatedAt": {
+                "parameter": "estimatedAt"
+              },
+              "actualAt": {
+                "parameter": "actualAt"
+              },
+              "sourceTime": {
+                "parameter": "sourceTime"
+              },
+              "recordedAt": {
+                "parameter": "recordedAt"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "FlightObservation",
+          "id": {
+            "parameter": "id"
+          }
+        }
+      },
+      {
+        "apiName": "RecordTakObservation",
+        "description": "Ingest external TAK CoT 2.0 observation; strictly isolated from confirmed operational facts",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cotUid": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cotType": {
+              "type": "string",
+              "minLength": 1
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "position",
+                "geochat",
+                "marker",
+                "opsPtt",
+                "other"
+              ]
+            },
+            "callsign": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "latitude": {
+              "type": "number"
+            },
+            "longitude": {
+              "type": "number"
+            },
+            "observedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "staleAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "receivedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "id",
+            "eventId",
+            "cotUid",
+            "cotType",
+            "category",
+            "observedAt",
+            "receivedAt"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "createObject",
+            "object": {
+              "type": "TakObservation",
+              "id": {
+                "parameter": "id"
+              }
+            },
+            "properties": {
+              "id": {
+                "parameter": "id"
+              },
+              "eventId": {
+                "parameter": "eventId"
+              },
+              "cotUid": {
+                "parameter": "cotUid"
+              },
+              "cotType": {
+                "parameter": "cotType"
+              },
+              "category": {
+                "parameter": "category"
+              },
+              "callsign": {
+                "parameter": "callsign"
+              },
+              "latitude": {
+                "parameter": "latitude"
+              },
+              "longitude": {
+                "parameter": "longitude"
+              },
+              "observedAt": {
+                "parameter": "observedAt"
+              },
+              "staleAt": {
+                "parameter": "staleAt"
+              },
+              "receivedAt": {
+                "parameter": "receivedAt"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "TakObservation",
+          "id": {
+            "parameter": "id"
+          }
+        }
+      },
+      {
+        "apiName": "AcceptSessionStewardship",
+        "description": "Steward acknowledges a Conference Session",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "session": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "session",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "session": "Session"
+        },
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "session"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "sessionState": {
+                "literal": "acknowledged"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "Session",
+          "id": {
+            "parameter": "session"
+          }
+        }
+      },
+      {
+        "apiName": "DeclineSessionStewardship",
+        "description": "Steward declines a Conference Session",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "session": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "required": [
+            "session",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "session": "Session"
+        },
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "session"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "sessionState": {
+                "literal": "declined"
+              },
+              "declineReason": {
+                "parameter": "reason"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "Session",
+          "id": {
+            "parameter": "session"
+          }
+        }
+      },
+      {
+        "apiName": "RebookSessionRoom",
+        "description": "Dispatcher rebooks a Conference Session into an available Room with reservation",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "session": {
+              "type": "string",
+              "minLength": 1
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "room": {
+              "type": "string",
+              "minLength": 1
+            },
+            "allocations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "resourceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "startAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "endAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "resourceId",
+                  "startAt",
+                  "endAt"
+                ]
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "session",
+            "expectedRevision",
+            "room",
+            "allocations"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {
+          "session": "Session",
+          "room": "Room"
+        },
+        "submissionCriteria": [
+          {
+            "function": "CheckVehicleCapacity",
+            "arguments": {
+              "requiredCapacity": {
+                "parameter": "session",
+                "path": [
+                  "attendees"
+                ]
+              },
+              "resourceCapacity": {
+                "parameter": "room",
+                "path": [
+                  "capacity"
+                ]
+              },
+              "resourceReadiness": {
+                "parameter": "room",
+                "path": [
+                  "readiness"
+                ]
+              }
+            },
+            "message": "Selected room is unavailable or cannot fit expected attendees"
+          }
+        ],
+        "reservation": {
+          "holderParameter": "session",
+          "allocationsParameter": "allocations",
+          "state": "committed"
+        },
+        "rules": [
+          {
+            "op": "editObject",
+            "object": {
+              "parameter": "session"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "properties": {
+              "roomId": {
+                "parameter": "room"
+              }
+            }
+          },
+          {
+            "op": "addLink",
+            "link": "SessionRoom",
+            "from": {
+              "type": "Session",
+              "id": {
+                "parameter": "session"
+              }
+            },
+            "to": {
+              "type": "Room",
+              "id": {
+                "parameter": "room"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "Session",
+          "id": {
+            "parameter": "session"
+          }
+        }
+      },
+      {
+        "apiName": "ApplyDispatchScenario",
+        "description": "Atomically merge an approved dispatch Scenario into live TransferLeg, Vehicle, and ArrivalPlan objects",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "scenario": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "scenario",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "applyScenario",
+            "scenario": {
+              "parameter": "scenario"
+            },
+            "expectedRevision": {
+              "parameter": "expectedRevision"
+            },
+            "objectTypes": [
+              "TransferLeg",
+              "Vehicle",
+              "ArrivalPlan"
+            ],
+            "linkTypes": [
+              "TransferLegVehicle"
+            ]
+          }
+        ],
+        "result": {
+          "type": "OntologyScenario",
+          "id": {
+            "parameter": "scenario"
+          }
+        }
+      },
+      {
+        "apiName": "SubmitScenarioReview",
+        "description": "Submit an owned Scenario revision to selected reviewers",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reviewers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "maxItems": 100
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "reviewers"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "reviewScenario",
+            "scenario": {
+              "parameter": "id"
+            },
+            "expectedRevision": {
+              "parameter": "revision"
+            },
+            "review": {
+              "kind": "submit",
+              "reviewers": {
+                "parameter": "reviewers"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "OntologyScenario",
+          "id": {
+            "parameter": "id"
+          }
+        }
+      },
+      {
+        "apiName": "ApproveScenarioReview",
+        "description": "Approve the exact Scenario revision and reviewed snapshot",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "snapshot": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "decision": {
+              "type": "object",
+              "description": "Optional decision interpreted by the installed review adapter"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "snapshot"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "reviewScenario",
+            "scenario": {
+              "parameter": "id"
+            },
+            "expectedRevision": {
+              "parameter": "revision"
+            },
+            "review": {
+              "kind": "approve",
+              "snapshot": {
+                "parameter": "snapshot"
+              },
+              "decision": {
+                "parameter": "decision"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "OntologyScenario",
+          "id": {
+            "parameter": "id"
+          }
+        }
+      },
+      {
+        "apiName": "RejectScenarioReview",
+        "description": "Reject the exact Scenario revision and reviewed snapshot",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "snapshot": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "snapshot"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "reviewScenario",
+            "scenario": {
+              "parameter": "id"
+            },
+            "expectedRevision": {
+              "parameter": "revision"
+            },
+            "review": {
+              "kind": "reject",
+              "snapshot": {
+                "parameter": "snapshot"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "OntologyScenario",
+          "id": {
+            "parameter": "id"
+          }
+        }
+      },
+      {
+        "apiName": "SubmitScenarioReviewForMerge",
+        "description": "Submit a Scenario and authorize one exact live merge Action after review",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reviewers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "merge": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "input": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "action",
+                "input"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "reviewers",
+            "merge"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "reviewScenario",
+            "scenario": {
+              "parameter": "id"
+            },
+            "expectedRevision": {
+              "parameter": "revision"
+            },
+            "review": {
+              "kind": "submit",
+              "reviewers": {
+                "parameter": "reviewers"
+              },
+              "authorizeMerge": {
+                "parameter": "merge"
+              }
+            }
+          }
+        ],
+        "result": {
+          "type": "OntologyScenario",
+          "id": {
+            "parameter": "id"
+          }
+        }
+      },
+      {
+        "apiName": "ApproveAndMergeScenarioReview",
+        "description": "Approve an inspected snapshot and commit its owner-authorized merge atomically",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "snapshot": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "decision": {
+              "type": "object",
+              "description": "Optional decision interpreted by the installed review adapter"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "snapshot"
+          ],
+          "additionalProperties": false
+        },
+        "objectParameters": {},
+        "submissionCriteria": [],
+        "rules": [
+          {
+            "op": "reviewScenario",
+            "scenario": {
+              "parameter": "id"
+            },
+            "expectedRevision": {
+              "parameter": "revision"
+            },
+            "review": {
+              "kind": "approve",
+              "snapshot": {
+                "parameter": "snapshot"
+              },
+              "decision": {
+                "parameter": "decision"
+              },
+              "applyAuthorizedMerge": true
+            }
+          }
+        ],
+        "result": {
+          "type": "OntologyScenario",
+          "id": {
+            "parameter": "id"
+          }
+        }
+      }
+    ],
+    "dataSources": [],
+    "agentProfiles": [
+      {
+        "apiName": "DispatchCopilot",
+        "terms": [
+          "dispatch",
+          "pickup",
+          "delay",
+          "vehicle",
+          "reception",
+          "hotel",
+          "flight",
+          "scenario"
+        ],
+        "objects": [
+          "Event",
+          "TransferLeg",
+          "Vehicle",
+          "ArrivalPlan",
+          "FlightObservation",
+          "TakObservation",
+          "OntologyScenario"
+        ],
+        "interfaces": [
+          "WorkItem",
+          "ReservableResource",
+          "Scenario"
+        ],
+        "links": [
+          "TransferLegVehicle",
+          "ArrivalPlanTransferLeg",
+          "TransferLegFlightObservation",
+          "TransferLegTakObservations"
+        ],
+        "functions": [
+          "CalculateReceptionWindow",
+          "EvaluateHotelRisk",
+          "CheckVehicleCapacity"
+        ],
+        "actions": [
+          "SubmitScenarioReviewForMerge"
+        ],
+        "instructions": [
+          {
+            "action": "SubmitScenarioReviewForMerge",
+            "text": "Never mutate live TransferLeg or ArrivalPlan directly. Stage proposed vehicle replacements or pickup reschedules in a Scenario and submit for human dispatcher approval."
+          },
+          {
+            "function": "CalculateReceptionWindow",
+            "text": "Always verify sourceTime freshness before proposing a pickup time reschedule."
+          }
+        ]
+      }
+    ]
+  }
+}

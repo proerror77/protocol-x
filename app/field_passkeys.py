@@ -11,7 +11,8 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field, UUID4, field_validator
 
-from .field import InviteInput, digest, expiry, stamp
+from .field import InviteInput, client_ip, digest, expiry, stamp
+from .field_email import email_grant_person
 from .models import StrictModel
 
 ANDROID_PACKAGE = "com.mandonothing.ops"
@@ -34,6 +35,8 @@ class Ceremony(StrictModel):
 def register_field_passkeys(app, field):
     rp_id = os.getenv("OPS_PASSKEY_RP_ID", "").strip().lower()
     certificate = os.getenv("OPS_PASSKEY_ANDROID_SHA256", "").replace(":", "").strip().upper()
+    if field.email_enrollment and not rp_id:
+        raise ValueError("Email enrollment requires a Passkey RP ID and Android signing certificate.")
     if rp_id or certificate:
         try:
             ipaddress.ip_address(rp_id)
@@ -49,7 +52,7 @@ def register_field_passkeys(app, field):
 
     @app.get("/api/field/passkeys")
     def status():
-        return JSONResponse({"enabled": bool(rp_id)}, headers=CACHE_HEADERS)
+        return JSONResponse({"enabled": bool(rp_id), "email_enrollment": field.email_enrollment}, headers=CACHE_HEADERS)
 
     if not rp_id:
         return
@@ -72,12 +75,12 @@ def register_field_passkeys(app, field):
     @app.get("/.well-known/assetlinks.json")
     def assetlinks():
         fingerprint = ":".join(certificate[i:i + 2] for i in range(0, len(certificate), 2))
-        return [{"relation": ["delegate_permission/common.get_login_creds"],
+        return [{"relation": ["delegate_permission/common.get_login_creds", "delegate_permission/common.handle_all_urls"],
                  "target": {"namespace": "android_app", "package_name": ANDROID_PACKAGE,
                             "sha256_cert_fingerprints": [fingerprint]}}]
 
     def begin(conn, request, operation, challenge, options, invite_hash=None):
-        address = request.client.host if request.client else ""
+        address = client_ip(request)
         conn.execute("DELETE FROM field_passkey_ceremonies WHERE expires_at<=?", (stamp(),))
         count = conn.execute("SELECT count(*) AS n FROM field_passkey_ceremonies WHERE address=?", (address,)).fetchone()
         if count["n"] >= 40:
@@ -98,10 +101,13 @@ def register_field_passkeys(app, field):
     def consume(conn, body):
         conn.execute("UPDATE field_passkey_ceremonies SET used_at=? WHERE id=?", (stamp(), str(body.ceremony)))
 
+    def registration_person(conn, code):
+        return email_grant_person(conn, code) if field.email_enrollment else field.available_invite(conn, code)
+
     @app.post("/api/field/passkeys/register/options")
     def register_options(body: InviteInput, request: Request):
         with store.connect(write=True) as conn:
-            person = field.available_invite(conn, body.code)
+            person = registration_person(conn, body.code)
             challenge = secrets.token_bytes(32)
             options = generate_registration_options(
                 rp_id=rp_id, rp_name="Protocol X", user_name=person["callsign"], user_id=person["id"].encode(),
@@ -114,10 +120,10 @@ def register_field_passkeys(app, field):
     @app.post("/api/field/passkeys/register/verify")
     def register_verify(body: Ceremony):
         if not body.invite_code:
-            raise HTTPException(422, "请先打开调度员发给你的登录包")
+            raise HTTPException(422, "请先完成首次登录验证")
         invite_hash = digest(body.invite_code)
         with store.connect(write=True) as conn:
-            person = field.available_invite(conn, body.invite_code)
+            person = registration_person(conn, body.invite_code)
             challenge = challenge_for(conn, body, "register", invite_hash)
             try:
                 verified = verify_registration_response(credential=body.credential, expected_challenge=challenge,
@@ -129,9 +135,12 @@ def register_field_passkeys(app, field):
                 raise HTTPException(409, "这个 Passkey 已登记，请使用 Passkey 登录")
             conn.execute("INSERT INTO field_passkeys VALUES (?,?,?,?,?)",
                          (credential_id, person["id"], verified.credential_public_key, verified.sign_count, stamp()))
-            conn.execute("UPDATE field_invites SET used_at=? WHERE token_hash=?", (stamp(), invite_hash))
+            if field.email_enrollment:
+                conn.execute("DELETE FROM field_email_links WHERE person_id=?", (person["id"],))
+            else:
+                conn.execute("UPDATE field_invites SET used_at=? WHERE token_hash=?", (stamp(), invite_hash))
             consume(conn, body)
-            return field.issue_session(conn, person)
+            return field.issue_session(conn, person, auth_method="passkey")
 
     @app.post("/api/field/passkeys/login/options")
     def login_options(request: Request):
@@ -169,4 +178,4 @@ def register_field_passkeys(app, field):
                 raise HTTPException(401, "Passkey 登录验证失败，请重试") from error
             conn.execute("UPDATE field_passkeys SET sign_count=? WHERE id=?", (verified.new_sign_count, credential_id))
             consume(conn, body)
-            return field.issue_session(conn, {**dict(key), "id": key["person_id"]})
+            return field.issue_session(conn, {**dict(key), "id": key["person_id"]}, auth_method="passkey")

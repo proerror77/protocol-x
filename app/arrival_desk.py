@@ -139,11 +139,12 @@ def history(conn, event_id, task_id, kind, actor, detail, occurred_at=None):
 
 
 class ArrivalDesk:
-    def __init__(self, store, definitions, pickup, field):
+    def __init__(self, store, definitions, pickup, field, *, foundry_bridge=None):
         self.store = store
         self.definitions = definitions
         self.pickup = pickup
         self.field = field
+        self.foundry_bridge = foundry_bridge
         pickup.on_observation = self.record_observation
         with store.connect(write=True) as conn:
             conn.executescript("""
@@ -412,6 +413,9 @@ class ArrivalDesk:
         import hashlib
         from uuid import uuid4
 
+        if self.foundry_bridge is not None and self.foundry_bridge.settings.mode == "primary":
+            self.foundry_bridge.forward_arrival_stage(event_id, task_id, body, user)
+
         with self.store.connect(write=True) as conn:
             key = f"arrival-stage:{body.idempotency_key}" if body.idempotency_key else None
             fingerprint = (
@@ -466,6 +470,8 @@ class ArrivalDesk:
                     "INSERT INTO receipts(id,event_id,idempotency_key,fingerprint,actor,data) VALUES (?,?,?,?,?,?)",
                     (receipt["id"], event_id, key, fingerprint, user["actor"], dump(receipt)),
                 )
+        if self.foundry_bridge is not None and self.foundry_bridge.settings.mode == "shadow":
+            self.foundry_bridge.forward_arrival_stage(event_id, task_id, body, user)
         return result
 
     def photo(self, event_id, task_id, player_id, user, upload=None):

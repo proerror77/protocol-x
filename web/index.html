@@ -144,6 +144,7 @@
         <label>姓名<input name="name" maxlength="32" required></label>
         <label>现场呼号<input name="callsign" maxlength="24" required></label>
         <label>角色<select name="role"><option value="staff">接机员或司机</option><option value="dispatcher">调度员</option></select></label>
+        <div id="arrival-team-new-email" hidden><label>批准的登录邮箱<input name="login_email" type="email" maxlength="254"></label></div>
       </div>
       <p id="arrival-team-error" class="arrival-warning" role="alert"></p>
       <div class="dialog-actions">
@@ -154,7 +155,12 @@
     <div id="arrival-team-reissue" class="arrival-form-grid">
       <label>已有接待人员<select id="arrival-team-person"></select></label>
       <button type="button" id="arrival-team-invite" class="button button-secondary">补发个人绑定码</button>
+      <div id="arrival-team-login-email" hidden>
+        <label>登录邮箱（留空可撤销批准）<input id="arrival-team-email" type="email" maxlength="254"></label>
+        <button type="button" id="arrival-team-approve-email" class="button button-secondary">保存登录邮箱</button>
+      </div>
     </div>
+    <p id="arrival-team-status" role="status"></p>
     <div id="arrival-team-result" hidden>
       <label>个人绑定码<input id="arrival-team-code" readonly autocomplete="off"></label>
       <p>请私下交给本人使用。绑定码 15 分钟内有效，可使用一次。</p>

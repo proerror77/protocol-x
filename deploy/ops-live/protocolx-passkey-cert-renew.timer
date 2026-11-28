@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Protocol X login domain certificate twice a day
+
+[Timer]
+OnCalendar=*-*-* 03,15:25:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
