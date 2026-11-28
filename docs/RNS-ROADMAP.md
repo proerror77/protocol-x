@@ -70,7 +70,7 @@ Audit of `README.md`, `CONTEXT.md`, `docs/`, `app/`, and `android/app/src/main/j
 
 ---
 
-## 4. RNS-01 .. RNS-13 PR Breakdown & Implementation Status (`main` @ `c75388d` + `rns/s21-device-qa` @ `71ca258`)
+## 4. RNS-01 .. RNS-13 PR Breakdown & Implementation Status (`main` @ `d38a750` + `rns/s26-dual-device-qa` @ `f7c0774`)
 
 | PR | Title | GitHub Issue | Stage | Track | Dependencies | Estimate | Current Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -139,7 +139,7 @@ Track B proceeds concurrently against the frozen `CommEnvelope` and `Action`/`Re
 
 ## 7. Mandatory Decision Gate Before Retiring Custom Mesh (`RNS-13`)
 
-> **Current Gate Status (`origin/main` `c75388d` + `rns/s21-device-qa` @ `71ca258`):** **NOT CLEARED — `RNS-13` (`#21`) REMAINS BLOCKED.** Automated/loopback Rust, Python, and Android suites plus NDK `.so` bundling (`arm64-v8a` `4,030,296` B / `x86_64` `4,446,928` B) and single-device Samsung Galaxy S21 Ultra (`R5CR40E11PP`) JNI/Keystore/radio/Python E2E verification (`5/5` tests in `4.309s`) now pass (see [docs/RNS-12-QA-REPORT.md](RNS-12-QA-REPORT.md)). Multi-phone `50–100 m` Wi-Fi Aware LOS range (needs 2nd physical phone), `3–5` physical Android RF multi-hop chaining, multi-device RF audio PTT latency + live WAN ↔ RF failover, and the `24 h` device endurance soak remain pending.
+> **Current Gate Status (`origin/main` `d38a750` + `rns/s26-dual-device-qa` @ `f7c0774`):** **NOT CLEARED — `RNS-13` (`#21`) REMAINS BLOCKED.** Automated/loopback Rust (`14/14`), Python (`39/39` + `63/63`), and Android (`25` suites / `84` tests) suites, NDK `.so` bundling (`arm64-v8a` `4,030,296` B / `x86_64` `4,446,928` B), and single-device Samsung Galaxy S21 Ultra (`R5CR40E11PP`) JNI/Keystore/radio/Python E2E verification (`5/5` tests in `4.021s`) pass, and the S26/dual-device harness (`DualDeviceRnsTest.kt`, `scripts/run-dual-device-qa.sh`) is code-reviewed and compiled (`assembleDebugAndroidTest`). S26 (`100.108.44.112:5555`) was offline during verification, so standalone S26 Android 17 QA, live S21 ↔ S26 co-located Wi-Fi Aware/BLE RF `50–100 m` LOS range, `3–5` physical Android RF multi-hop chaining, multi-device RF audio PTT latency + live WAN ↔ RF failover, and the `24 h` device endurance soak remain pending (see [docs/RNS-12-QA-REPORT.md](RNS-12-QA-REPORT.md)).
 
 Existing custom mesh code (`NearbyRadios`, `NearbyMessages`, `NearbyLiveVoice`, legacy `NearbyPrivate` transport loops) provides current v0.27.3 field capability and **must remain operational behind `RNS-02` adapters** until **all four gate criteria** are verified in `RNS-12`:
 
